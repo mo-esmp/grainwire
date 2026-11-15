@@ -3,6 +3,9 @@
     <Project Path="src/GrainWire.Abstractions/GrainWire.Abstractions.csproj" />
     <Project Path="src/GrainWire.Server/GrainWire.Server.csproj" />
   </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Chess/Server/Chess.Server.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/GrainWire.Tests/GrainWire.Tests.csproj" />
     <Project Path="tests/GrainWire.TestHost/GrainWire.TestHost.csproj" />

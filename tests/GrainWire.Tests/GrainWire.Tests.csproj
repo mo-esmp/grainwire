@@ -14,6 +14,7 @@
     <PackageReference Include="MQTTnet" />
     <ProjectReference Include="../../src/GrainWire.Abstractions/GrainWire.Abstractions.csproj" />
     <ProjectReference Include="../../src/GrainWire.Server/GrainWire.Server.csproj" />
+    <ProjectReference Include="../../samples/Chess/Server/Chess.Server.csproj" />
     <Using Include="Xunit" />
     <None Include="../../docs/protocol-golden/**/*.json" Link="golden/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

@@ -1,4 +1,5 @@
-import { connect as mqttConnect } from "mqtt";
+// The default import works in both of MQTT.js's builds; its browser bundle has no named exports.
+import mqtt from "mqtt";
 import type { IClientOptions, MqttClient } from "mqtt";
 import { ConnectError, NotConnectedError, OutcomeUnknownError, RejectedError, RoomClosedError, RoomError } from "./errors.js";
 import { defaultOrderingOptions, OrderingEngine } from "./ordering.js";
@@ -245,7 +246,7 @@ export class GrainWireClient {
         resolve();
       };
 
-      this.mqtt = mqttConnect(this.options.url, {
+      this.mqtt = mqtt.connect(this.options.url, {
         ...this.options.mqtt,
         clientId: this.clientId,
         username: this.options.username ?? "token",

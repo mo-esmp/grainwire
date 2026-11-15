@@ -45,3 +45,23 @@ jobs:
         working-directory: clients/ts
       - run: npm pack
         working-directory: clients/ts
+
+  chess-sample:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: dotnet build samples/Chess/Server
+      - run: npm ci && npm run build
+        working-directory: clients/ts
+      - run: npm ci
+        working-directory: samples/Chess/Web
+      - run: npx playwright install --with-deps chromium
+        working-directory: samples/Chess/Web
+      - run: npm run e2e
+        working-directory: samples/Chess/Web
