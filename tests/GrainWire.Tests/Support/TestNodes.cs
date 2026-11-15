@@ -34,21 +34,25 @@ public static class Ports
 /// <summary>One process-like node of a test cluster: a silo, a gateway, or both, hosted in a real ASP.NET Core app.</summary>
 public sealed class TestNode : IAsyncDisposable
 {
-    private TestNode(WebApplication app, int httpPort, bool hasGateway)
+    private TestNode(WebApplication app, int httpPort, bool hasGateway, int siloPort)
     {
         App = app;
         HttpPort = httpPort;
         HasGateway = hasGateway;
+        SiloPort = siloPort;
     }
+
+    /// <summary>The silo-to-silo port, or 0 for a standalone gateway. Room grains report it in <c>RuntimeIdentity</c>.</summary>
+    public int SiloPort { get; }
+
+    /// <summary>True when <paramref name="runtimeIdentity"/> (from the "where" command) names this node's silo.</summary>
+    public bool Hosts(string? runtimeIdentity) => SiloPort != 0 && runtimeIdentity is not null && runtimeIdentity.Contains($":{SiloPort}:", StringComparison.Ordinal);
 
     public WebApplication App { get; }
     public int HttpPort { get; }
     public bool HasGateway { get; }
     public string MqttUrl => $"ws://127.0.0.1:{HttpPort}/mqtt";
     public IGrainFactory Grains => App.Services.GetRequiredService<IGrainFactory>();
-
-    /// <summary>The identity room grains report from <c>RuntimeIdentity</c> when they run on this node's silo.</summary>
-    public string SiloIdentity => App.Services.GetRequiredService<ILocalSiloDetails>().SiloAddress.ToString();
 
     /// <summary>Mode A: an Orleans silo with the gateway in the same process.</summary>
     public static Task<TestNode> StartSiloWithGateway(TestClusterInfo cluster, bool primary, Action<GrainWireGatewayOptions>? gateway = null) =>
@@ -64,6 +68,7 @@ public sealed class TestNode : IAsyncDisposable
     private static async Task<TestNode> Start(TestClusterInfo cluster, bool silo, bool primary, bool withGateway, Action<GrainWireGatewayOptions>? gateway)
     {
         var httpPort = Ports.Next();
+        var siloPort = 0;
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
         builder.Logging.ClearProviders();
         builder.Logging.SetMinimumLevel(LogLevel.Error);
@@ -71,12 +76,13 @@ public sealed class TestNode : IAsyncDisposable
 
         if (silo)
         {
-            var siloPort = primary ? cluster.PrimarySiloPort : Ports.Next();
+            siloPort = primary ? cluster.PrimarySiloPort : Ports.Next();
+            var thisSiloPort = siloPort;
             var gatewayPort = Ports.Next();
             cluster.GatewayPorts.Add(gatewayPort);
             builder.UseOrleans(orleans =>
             {
-                orleans.UseLocalhostClustering(siloPort, gatewayPort, primary ? null : new IPEndPoint(IPAddress.Loopback, cluster.PrimarySiloPort), cluster.ClusterId, cluster.ClusterId);
+                orleans.UseLocalhostClustering(thisSiloPort, gatewayPort, primary ? null : new IPEndPoint(IPAddress.Loopback, cluster.PrimarySiloPort), cluster.ClusterId, cluster.ClusterId);
                 orleans.Configure<ClusterMembershipOptions>(o =>
                 {
                     // Notice a stopped silo quickly.
@@ -110,7 +116,7 @@ public sealed class TestNode : IAsyncDisposable
         var app = builder.Build();
         if (withGateway) app.MapGrainWire();
         await app.StartAsync();
-        return new TestNode(app, httpPort, withGateway);
+        return new TestNode(app, httpPort, withGateway, siloPort);
     }
 
     public async Task StopAsync()
