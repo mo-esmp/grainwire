@@ -40,6 +40,9 @@ internal sealed class GatewayConnection
 
     public volatile bool Closed;
 
+    /// <summary>Set to 1 once the gateway has decided to disconnect this connection for falling behind.</summary>
+    public int Evicting;
+
     /// <summary>Generations grow with time so that a newer connection of the same tab always wins, on any gateway.</summary>
     private static long NextGeneration()
     {

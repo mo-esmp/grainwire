@@ -126,6 +126,13 @@ public abstract class CounterRoomBase : RoomGrain<CounterState>
     [OnMessage("unschedule")]
     public void Unschedule(PlayerId player) => CancelSchedule("bump");
 
+    /// <summary>Broadcasts many events from one command, to overflow a small outgoing queue.</summary>
+    [OnMessage("burst")]
+    public void Burst(PlayerId player, AddRequest request)
+    {
+        for (var i = 0; i < request.Amount; i++) Broadcast("noise", new { i, pad = new string('x', 200) });
+    }
+
     [OnMessage("where")]
     public string Where() => RuntimeIdentity;
 

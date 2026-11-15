@@ -101,7 +101,7 @@ internal sealed partial class Gateway : IGatewayObserver
             return;
         }
 
-        if (!result.Succeeded || string.IsNullOrEmpty(result.Player.Value))
+        if (!result.Succeeded || result.Player.Value is not { Length: > 0 and <= 256 })
         {
             e.ReasonCode = MqttConnectReasonCode.BadUserNameOrPassword;
             e.ReasonString = result.FailureReason ?? "Authentication failed.";
@@ -193,8 +193,8 @@ internal sealed partial class Gateway : IGatewayObserver
     private Task OnOutgoingQueueOverflow(string clientId)
     {
         // The connection cannot keep up. Dropped events would only show up as gaps, so cut it loose: it reconnects and gets a snapshot.
-        if (!_connections.TryGetValue(clientId, out var connection) || connection.Closed) return Task.CompletedTask;
-        connection.Closed = true;
+        // Many messages can overflow at once; disconnect only once. The normal disconnect handling then cleans up.
+        if (!_connections.TryGetValue(clientId, out var connection) || Interlocked.Exchange(ref connection.Evicting, 1) == 1) return Task.CompletedTask;
         _log.LogWarning("Disconnecting {ClientId}: its outgoing queue overflowed.", clientId);
         _ = Task.Run(async () =>
         {
@@ -205,10 +205,6 @@ internal sealed partial class Gateway : IGatewayObserver
             catch (Exception ex)
             {
                 _log.LogDebug(ex, "Could not disconnect slow consumer {ClientId}.", clientId);
-            }
-            finally
-            {
-                connection.Closed = false;
             }
         });
         return Task.CompletedTask;

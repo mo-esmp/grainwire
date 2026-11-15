@@ -4,6 +4,9 @@ Date: 2026-11-15
 Design: [../specs/2026-11-15-grainwire-design.md](../specs/2026-11-15-grainwire-design.md) (approved v2)
 Section references like "§7.8" point into that design.
 
+Status: **all phases implemented on 2026-11-15**, except the owner actions (reserving names, publishing).
+Where the result differs from this plan or the design, see [ADR 0002](../adr/0002-implementation-notes.md).
+
 ## How this plan is shaped
 
 - **Spike first, then a walking skeleton.** The riskiest unknowns are library APIs

@@ -111,6 +111,43 @@ public class FailoverTests
     }
 
     [Fact]
+    public async Task A_client_that_cannot_keep_up_is_disconnected_and_cleaned_up_and_can_come_back()
+    {
+        var info = new TestClusterInfo();
+        await using var node = await TestNode.StartSiloWithGateway(info, primary: true, options => options.MaxOutgoingQueue = 2);
+        var room = $"counter/{Guid.NewGuid():N}";
+        var alice = await TestClient.ConnectAsync(node.MqttUrl, "alice");
+        var bob = await TestClient.ConnectAsync(node.MqttUrl, "bob");
+        await alice.Join(room);
+        await bob.Join(room, create: false);
+
+        // Thousands of events from one command: far more than two can wait for one connection.
+        await alice.Publish($"rooms/{room}/cmd/burst", """{"noreply":true,"d":{"amount":5000}}""");
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        while (alice.IsConnected || bob.IsConnected)
+        {
+            Assert.True(DateTime.UtcNow < deadline, "the overflowing connections were never disconnected");
+            await Task.Delay(50);
+        }
+
+        // The gateway forgets them and tells the room. A new member sees both as reconnecting: either already in
+        // its snapshot, or in a presence event shortly after (the room hears about a disconnect a moment later).
+        await using var carol = await TestClient.ConnectAsync(node.MqttUrl, "carol");
+        await carol.Join(room, create: false);
+        var snapshot = carol.Of(room, "$snapshot").Single().GetProperty("members").EnumerateArray().ToDictionary(m => m.Str("player")!, m => m.Str("status"));
+        foreach (var player in new[] { "alice", "bob" })
+        {
+            if (snapshot[player] != "reconnecting") await carol.WaitFor(all => all.Any(m => IsPresence(m, player, "reconnecting")));
+        }
+
+        await using var aliceAgain = await TestClient.ConnectAsync(node.MqttUrl, "alice", clientId: alice.ClientId);
+        Assert.Equal("joined", (await aliceAgain.Join(room, create: false)).Code());
+        await carol.WaitFor(all => all.Any(m => IsPresence(m, "alice", "online")));
+        alice.Abort();
+        bob.Abort();
+    }
+
+    [Fact]
     public async Task A_player_can_move_to_another_gateway_after_theirs_went_away()
     {
         var info = new TestClusterInfo();

@@ -10,7 +10,7 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="MQTTnet.Server" />
     <PackageReference Include="MQTTnet.AspNetCore" />
-    <ProjectReference Include="../GrainWire.Abstractions/GrainWire.Abstractions.csproj" />
+    <ProjectReference Include="../GrainWire.Abstractions/GrainWire.Abstractions.csproj" PrivateAssets="none" />
     <None Include="../../README.md" Pack="true" PackagePath="/" />
     <InternalsVisibleTo Include="GrainWire.Tests" />
     <InternalsVisibleTo Include="GrainWire.TestHost" />
