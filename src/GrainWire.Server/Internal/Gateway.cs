@@ -431,8 +431,12 @@ internal sealed partial class Gateway : IGatewayObserver
         }
     }
 
+    /// <summary>Test hook: return false to drop a message before it is sent (simulates loss).</summary>
+    internal Func<string, byte[], bool>? OutboundFilter { get; set; }
+
     private Task PublishAsync(string clientId, byte[] payload)
     {
+        if (OutboundFilter is { } filter && !filter(clientId, payload)) return Task.CompletedTask;
         var message = new MqttApplicationMessage
         {
             Topic = Wire.InboxTopic(clientId),

@@ -13,5 +13,6 @@
     <ProjectReference Include="../GrainWire.Abstractions/GrainWire.Abstractions.csproj" />
     <None Include="../../README.md" Pack="true" PackagePath="/" />
     <InternalsVisibleTo Include="GrainWire.Tests" />
+    <InternalsVisibleTo Include="GrainWire.TestHost" />
   </ItemGroup>
 </Project>

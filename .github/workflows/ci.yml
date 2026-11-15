@@ -34,7 +34,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - run: dotnet build tests/GrainWire.TestHost
       - run: npm ci
+        working-directory: clients/ts
+      - run: npm run typecheck
         working-directory: clients/ts
       - run: npm run build
         working-directory: clients/ts
