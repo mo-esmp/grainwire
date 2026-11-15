@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>GrainWire.Server</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>GrainWire gateway: an MQTT-over-WebSockets endpoint (MQTTnet) that connects browsers to GrainWire room grains. Runs inside an Orleans silo or as a standalone Orleans client.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="MQTTnet.Server" />
+    <PackageReference Include="MQTTnet.AspNetCore" />
+    <ProjectReference Include="../GrainWire.Abstractions/GrainWire.Abstractions.csproj" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <InternalsVisibleTo Include="GrainWire.Tests" />
+  </ItemGroup>
+</Project>
