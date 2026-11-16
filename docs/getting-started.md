@@ -147,6 +147,68 @@ Things to try:
 - **Go offline** in one window (DevTools → Network → Offline). The others see
   "… is reconnecting". Go back online: the page catches up by itself.
 
+## Using the .NET client
+
+The same room can be used from a .NET app: a desktop or mobile app, a bot, a service, or a test.
+`GrainWire.Client` behaves like the browser client and does not depend on Orleans.
+
+```bash
+dotnet new console -n ChatConsole
+```
+
+```bash
+cd ChatConsole
+```
+
+```bash
+dotnet add package GrainWire.Client --prerelease
+```
+
+Replace `Program.cs` with the following, and put the port your server printed in the address:
+
+```csharp
+using GrainWire.Client;
+
+Console.Write("Your name? ");
+var name = Console.ReadLine() is { Length: > 0 } typed ? typed : "guest";
+
+await using var client = await GrainWireClient.ConnectAsync(new GrainWireClientOptions
+{
+    Url = new Uri("ws://localhost:5000/mqtt"),
+    Username = name,
+});
+var room = await client.JoinAsync<ChatView>("chat", "lobby", new JoinOptions { Create = true });
+
+// A snapshot arrives after joining, after a reconnect, and whenever the client had to catch up.
+room.OnSnapshot((view, _) => view.Lines.ForEach(Show));
+room.On<ChatLine>("said", Show);
+room.OnPresence(p => Console.WriteLine($"({p.Player} is {p.Status})"));
+
+while (Console.ReadLine() is { } text)
+{
+    try
+    {
+        await room.RequestAsync("say", new { text });   // completes once the room has committed it
+    }
+    catch (RejectedException rejected)
+    {
+        Console.WriteLine(rejected.Reason);
+    }
+}
+
+static void Show(ChatLine line) => Console.WriteLine($"{line.From}: {line.Text}");
+
+record ChatView(List<ChatLine> Lines);
+record ChatLine(string From, string Text);
+```
+
+Run it next to the browser windows and chat between them. Handlers are called one at a time, in
+order, on a background thread; in a UI app, switch to the UI thread inside them.
+
+Requests fail in the same ways as in the browser client: `RejectedException` (the room refused),
+`RoomException` (it could not be processed), `OutcomeUnknownException` (no reply in time, which is
+not a rejection), `NotConnectedException` and `RoomClosedException`.
+
 ## What you did not have to write
 
 Topics, subscriptions, message ordering, who is online, reconnecting, catching up after a lost
