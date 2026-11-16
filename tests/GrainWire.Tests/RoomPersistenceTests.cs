@@ -58,6 +58,31 @@ public class RoomPersistenceTests(ClusterFixture fixture)
     }
 
     [Fact]
+    public async Task A_result_that_cannot_be_serialized_undoes_the_command()
+    {
+        FakeGateway gateway = NewGateway();
+        (RoomAddress room, string? incarnation, string? epoch) = await AliceAndBob(gateway);
+        Assert.Equal(5, FakeGateway.Read<int>((await gateway.Command(room, "alice", "a1", "add", new AddRequest(5))).Data));
+        await gateway.WaitFor("b1", e => e.Count == 1);
+
+        RoomReply failed = await gateway.Command(room, "alice", "a1", "add-then-return-unserializable", new AddRequest(7), commandId: "bad-result");
+        Assert.Equal(ReplyStatus.Error, failed.Status);
+        Assert.Equal(Wire.Codes.HandlerError, failed.Code);
+
+        // Nobody saw the change, the state is back, and a later command does not save the failed one's changes.
+        await Task.Delay(200);
+        Assert.Single(gateway.For("b1"));
+        await gateway.Command(room, "alice", "a1", "touch");
+        await Reactivate(gateway, room);
+        RoomReply sync = await gateway.Sync(room, "alice", "a1", incarnation, epoch, 0);
+        Assert.Equal(5, FakeGateway.Read<CounterView>(sync.Snapshot!.View).Value);
+
+        // The command id was not recorded as done, so a retry runs.
+        RoomReply retry = await gateway.Command(room, "alice", "a1", "add", new AddRequest(7), commandId: "bad-result");
+        Assert.Equal(12, FakeGateway.Read<int>(retry.Data));
+    }
+
+    [Fact]
     public async Task A_join_that_cannot_be_saved_does_not_add_the_member()
     {
         FakeGateway gateway = NewGateway();

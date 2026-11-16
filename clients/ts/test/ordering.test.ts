@@ -115,6 +115,26 @@ describe("OrderingEngine", () => {
     expect(engine.tick(10_000)).toEqual([]);
   });
 
+  it("stops asking after a failover, however often the server answers in-sync", () => {
+    const engine = new OrderingEngine(options, 0);
+    engine.receiveSnapshot(snapshot(5, "e1"), 0);
+    engine.receiveSnapshot(snapshot(2, "e2"), 10); // the room restarted
+    engine.receiveEvent(event(6, "e1"), 20); // a late event of the old epoch
+
+    // One minute of ticks, every sync answered with "in-sync".
+    let syncs = 0;
+    for (let now = 100; now <= 60_000; now += 100) {
+      if (engine.tick(now).length > 0) {
+        syncs++;
+        engine.confirmInSync(now + 10);
+      }
+    }
+
+    // One sync to find out about the held event, and then only the regular check of a silent room (every 15 s).
+    expect(syncs).toBeLessThanOrEqual(4);
+    expect(engine.current).toEqual({ ri: "i1", se: "e2", seq: 2 });
+  });
+
   it("keeps later events of the current stream when the server says the client is in sync", () => {
     const engine = new OrderingEngine(options, 0);
     engine.receiveSnapshot(snapshot(3), 0);

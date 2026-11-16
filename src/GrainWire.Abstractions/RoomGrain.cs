@@ -37,12 +37,12 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     // Ranks this epoch against the room's other epochs for gateways (see DeliveryBatch.EpochOrder). It starts from the
     // clock, and is raised when a gateway reports an epoch ranked at or above it, because clocks differ between silos.
     private long _epochOrder;
-    private readonly Dictionary<string, MemberRuntime> _runtime = [with(StringComparer.Ordinal)];
-    private readonly Dictionary<string, string> _connectionOwner = [with(StringComparer.Ordinal)];
-    private readonly Dictionary<string, GatewayLease> _gateways = [with(StringComparer.Ordinal)];
-    private readonly Dictionary<string, IGrainTimer> _deadlineTimers = [with(StringComparer.Ordinal)];
-    private readonly Dictionary<string, int> _deadlineFailures = [with(StringComparer.Ordinal)];
-    private readonly Dictionary<string, long> _batchNumbers = [with(StringComparer.Ordinal)];
+    private readonly Dictionary<string, MemberRuntime> _runtime = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _connectionOwner = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, GatewayLease> _gateways = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, IGrainTimer> _deadlineTimers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _deadlineFailures = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _batchNumbers = new(StringComparer.Ordinal);
     private Operation? _op;
 
     protected RoomGrain()
@@ -85,7 +85,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     {
         get
         {
-            List<RoomMember> list = [with(Record.Members.Count)];
+            List<RoomMember> list = new(Record.Members.Count);
             foreach (MemberRecord member in Record.Members.Values)
             {
                 list.Add(ToRoomMember(member));
@@ -346,9 +346,14 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
         {
             bool attached = Attach(request.Connection, player, request.Gateway.Id.Value);
 
-            // 3 + 4. Protect state, run the handler with its outbox.
-            object? result = null;
-            Exception? failure = await Guarded(async () => result = await handler.Invoke(this, request.Player, request.Data, _serializer));
+            // 3 + 4. Protect state, run the handler with its outbox. Turning the result into bytes is part of this
+            // step: if that fails, the handler's changes are undone like for any other failure.
+            byte[]? data = null;
+            Exception? failure = await Guarded(async () =>
+            {
+                object? result = await handler.Invoke(this, request.Player, request.Data, _serializer);
+                data = _serializer.Serialize(result);
+            });
 
             // 5 + 6. Outcome, commit, then release.
             RoomReply reply;
@@ -359,7 +364,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
             }
             else
             {
-                reply = RoomReply.Ok(data: _serializer.Serialize(result));
+                reply = RoomReply.Ok(data: data);
                 reply.Incarnation = Record.Incarnation;
                 op.NeedsSave = true;
                 if (request.CommandId is not null)
@@ -686,7 +691,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
         }
 
         // Everything this operation sends goes out as one numbered batch per gateway, so gateways can keep the order.
-        Dictionary<string, DeliveryBatch> batches = [with(StringComparer.Ordinal)];
+        Dictionary<string, DeliveryBatch> batches = new(StringComparer.Ordinal);
         Stamp(scope.Events, batches);
 
         if (removed is not null)
@@ -749,7 +754,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
             void Add(string gateway, string clientId, long seq)
             {
-                items ??= [with(StringComparer.Ordinal)];
+                items ??= new(StringComparer.Ordinal);
                 if (!items.TryGetValue(gateway, out DeliveryItem? item))
                 {
                     item = new DeliveryItem { Type = outgoing.Type, Data = outgoing.Data, Sequenced = outgoing.Sequenced };
@@ -1269,7 +1274,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     private SnapshotData BuildSnapshot(string player)
     {
         RoomRecord<TState> record = Record;
-        List<MemberInfo> members = [with(record.Members.Count)];
+        List<MemberInfo> members = new(record.Members.Count);
         MemberInfo? you = null;
         foreach (MemberRecord member in record.Members.Values)
         {
@@ -1391,7 +1396,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
         public long Seq;
         public PresenceStatus Status;
         public IGrainTimer? GraceTimer;
-        public readonly Dictionary<string, AttachedConnection> Connections = [with(StringComparer.Ordinal)];
+        public readonly Dictionary<string, AttachedConnection> Connections = new(StringComparer.Ordinal);
     }
 
     private readonly record struct AttachedConnection(long Generation, string Gateway);

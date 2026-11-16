@@ -118,6 +118,82 @@ public class BatchSequencerTests
         Assert.Equal(3, published.Count);
     }
 
+    // A room that produces batches faster than they can be published must not grow the gateway's memory without limit.
+    [Fact]
+    public async Task Batches_that_arrive_faster_than_they_are_published_are_dropped_beyond_a_bounded_backlog()
+    {
+        const int MaxBacklog = 100;
+        TaskCompletionSource gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        List<long> published = [];
+        List<string> overflows = [];
+        BatchSequencer sequencer = new(
+            async batch =>
+            {
+                await gate.Task;   // publishing is stuck
+                lock (published)
+                {
+                    published.Add(batch.Number);
+                }
+            },
+            TimeSpan.FromMilliseconds(150),
+            MaxBacklog,
+            room =>
+            {
+                lock (overflows)
+                {
+                    overflows.Add(room);
+                }
+            });
+
+        for (long number = 1; number <= 5000; number++)
+        {
+            sequencer.Accept(Batch(number));
+        }
+
+        // At most the backlog, plus the one batch that is being published, is held; the rest is gone.
+        Assert.InRange(sequencer.Backlog("counter/r1"), MaxBacklog - 1, MaxBacklog);
+        Assert.InRange(sequencer.Dropped, 5000 - MaxBacklog - 1, 5000 - MaxBacklog);
+        Assert.Equal(["counter/r1"], overflows);   // reported once, not once per batch
+
+        gate.SetResult();
+        DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+        while (sequencer.Backlog("counter/r1") > 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+        }
+
+        await Task.Delay(50);
+        long[] delivered;
+        lock (published)
+        {
+            delivered = [.. published];
+        }
+
+        Assert.Equal(5000 - sequencer.Dropped, delivered.Length);
+        Assert.Equal(delivered.Order(), delivered);   // what was kept is still in order
+
+        // Once publishing has caught up, batches flow again.
+        sequencer.Accept(Batch(5001));
+        deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            lock (published)
+            {
+                if (published.Contains(5001))
+                {
+                    break;
+                }
+            }
+
+            await Task.Delay(10);
+        }
+
+        lock (published)
+        {
+            Assert.Contains(5001, published);
+        }
+    }
+
     [Fact]
     public async Task Rooms_are_sequenced_independently()
     {

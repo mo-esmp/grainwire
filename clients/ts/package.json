@@ -35,7 +35,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:unit": "vitest run test/ordering.test.ts test/golden.test.ts"
+    "test:unit": "vitest run test/ordering.test.ts test/golden.test.ts test/room.test.ts"
   },
   "dependencies": {
     "mqtt": "^5.16.1"

@@ -34,7 +34,7 @@ internal sealed partial class Gateway : IGatewayObserver
     private readonly ConcurrentDictionary<string, int> _connectionsPerPlayer = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RoomAttachments> _directory = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, bool> _knownRoomTypes = new(StringComparer.Ordinal);
-    private readonly ConcurrentQueue<(RoomAddress Room, ConnectionId Connection)> _pendingDetaches = new();
+    private readonly DetachRetryQueue _detachRetries;
     private readonly Lock _refGate = new();
     private MqttServer? _server;
 
@@ -46,7 +46,9 @@ internal sealed partial class Gateway : IGatewayObserver
         _options = options;
         _log = log;
         _creations = new PerMinuteLimiter(options.RoomCreationsPerMinute);
-        _sequencer = new BatchSequencer(PublishBatchAsync, TimeSpan.FromMilliseconds(250));
+        _sequencer = new BatchSequencer(PublishBatchAsync, TimeSpan.FromMilliseconds(250), BatchSequencer.DefaultMaxBacklog, room =>
+            _log.LogWarning("Dropping batches from room {Room}: they arrive faster than they can be published. Its clients catch up with a sync.", room));
+        _detachRetries = new DetachRetryQueue(SendDetachAsync, TimeSpan.FromSeconds(5));
     }
 
     public GatewayId Id { get; } = new(Guid.NewGuid().ToString("N"));
@@ -358,7 +360,7 @@ internal sealed partial class Gateway : IGatewayObserver
             Gateway = Ref,
             Connection = connection.Id,
             Player = connection.Player,
-            Claims = connection.Claims.Count == 0 ? null : [with(connection.Claims)],
+            Claims = connection.Claims.Count == 0 ? null : new Dictionary<string, string>(connection.Claims),
             Create = mayCreate,
             Options = message.Options,
             Data = message.JoinData,
@@ -579,13 +581,12 @@ internal sealed partial class Gateway : IGatewayObserver
     /// </summary>
     public async Task RenewLeasesAsync(CancellationToken cancellationToken)
     {
-        // Disconnects a room could not be told about earlier.
-        for (int i = _pendingDetaches.Count; i > 0 && _pendingDetaches.TryDequeue(out (RoomAddress Room, ConnectionId Connection) pending); i--)
-        {
-            await DetachAsync(pending.Room, pending.Connection);
-        }
+        // Disconnects a room could not be told about earlier are retried on their own, not awaited here: a room that
+        // is slow or unreachable must not hold up the renewals of healthy rooms past their lease timeout.
+        _ = _detachRetries.Start(cancellationToken);
 
         _sequencer.Prune(TimeSpan.FromMinutes(10));
+        _creations.Sweep();
         List<KeyValuePair<string, RoomAttachments>> rooms = [];
         foreach (KeyValuePair<string, RoomAttachments> entry in _directory)
         {
@@ -708,15 +709,18 @@ internal sealed partial class Gateway : IGatewayObserver
     {
         try
         {
-            await _grains.GetGrain<IRoomGrain>(room.ToGrainId()).Detach(new DetachRequest { Gateway = Id, Connections = [connection] });
+            await SendDetachAsync(room, connection);
         }
         catch (Exception ex)
         {
-            // Keep it and try again with the next lease round, otherwise the room would show this player as online forever.
+            // Keep it and try again later, otherwise the room would show this player as online forever.
             _log.LogDebug(ex, "Could not tell room {Room} about a disconnect; will retry.", room);
-            _pendingDetaches.Enqueue((room, connection));
+            _detachRetries.Add(room, connection);
         }
     }
+
+    private Task SendDetachAsync(RoomAddress room, ConnectionId connection) =>
+        _grains.GetGrain<IRoomGrain>(room.ToGrainId()).Detach(new DetachRequest { Gateway = Id, Connections = [connection] });
 
     private static RoomAddress ParseRoomKey(string roomKey)
     {

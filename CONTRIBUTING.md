@@ -17,7 +17,9 @@ Thanks for your interest in GrainWire. Issues and pull requests are welcome.
 
 ## Build and test
 
-You need the .NET 10 SDK and Node.js 20 or later.
+You need the .NET 10 SDK and Node.js 20 or later. `global.json` selects the .NET 10 SDK even when a
+newer one is installed, and the language version is fixed at C# 14, so code that only a newer
+compiler accepts fails on your machine the same way it would for anyone else.
 
 ```bash
 dotnet test

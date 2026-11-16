@@ -454,6 +454,8 @@ export class Room<TView = unknown> {
   private joinedOnce = false;
   private syncing = false;
   private rejoining: Promise<void> | undefined;
+  private rejoinDelay: number;
+  private nextRejoinAt: number | undefined;
   private readonly readyWaiters = new Set<{ resolve: () => void; reject: (error: Error) => void }>();
 
   /** @internal */
@@ -462,9 +464,10 @@ export class Room<TView = unknown> {
     readonly type: string,
     readonly id: string,
     private readonly joinData: unknown,
-    settings: { gapWaitMs: number; syncIntervalMs: number },
+    private readonly settings: { gapWaitMs: number; syncIntervalMs: number; reconnectDelayMs: number; maxReconnectDelayMs: number },
   ) {
     this.key = `${type}/${id}`;
+    this.rejoinDelay = settings.reconnectDelayMs;
     this.engine = new OrderingEngine({ ...defaultOrderingOptions, gapWaitMs: settings.gapWaitMs, syncIntervalMs: settings.syncIntervalMs }, Date.now());
   }
 
@@ -572,6 +575,8 @@ export class Room<TView = unknown> {
   _joined(now: number): void {
     this.attached = true;
     this.joinedOnce = true;
+    this.rejoinDelay = this.settings.reconnectDelayMs;
+    this.nextRejoinAt = undefined;
     this.engine.expectBaseline(now);
   }
 
@@ -605,28 +610,39 @@ export class Room<TView = unknown> {
   _disconnected(): void {
     this.attached = false;
     this.syncing = false;
+    this.nextRejoinAt = undefined; // the reconnect joins again
   }
 
   /** @internal Joins again after a reconnect. The server keeps the seat and sends a fresh snapshot. */
   _rejoin(): Promise<void> {
     if (this.closed) return Promise.resolve();
-    this.rejoining ??= (async () => {
-      try {
-        const reply = await this.client.request("join", this.key, "sys/join", { create: false, data: this.joinData });
-        if (reply.status === "ok") {
-          this._joined(Date.now());
-        } else if (reply.code === "room-not-found") {
-          this._close("lost", undefined, true);
-        } else if (reply.status === "rejected" || reply.code === "not-member") {
-          this._close("removed", reply.reason, true);
-        }
-      } catch {
-        // Not connected or timed out: the next reconnect tries again.
-      } finally {
-        this.rejoining = undefined;
+    if (this.rejoining) return this.rejoining;
+
+    // Cleared in a continuation, which always runs after the assignment below, even when the attempt fails at once.
+    const attempt: Promise<void> = this.rejoinOnce().finally(() => {
+      if (this.rejoining === attempt) this.rejoining = undefined;
+    });
+    this.rejoining = attempt;
+    return attempt;
+  }
+
+  private async rejoinOnce(): Promise<void> {
+    try {
+      const reply = await this.client.request("join", this.key, "sys/join", { create: false, data: this.joinData });
+      if (reply.status === "ok") {
+        this._joined(Date.now());
+      } else if (reply.code === "room-not-found") {
+        this._close("lost", undefined, true);
+      } else if (reply.status === "rejected" || reply.code === "not-member") {
+        this._close("removed", reply.reason, true);
+      } else {
+        // "unavailable" and the like: the room could not be reached just now (a silo is recovering, say).
+        this.retryRejoinLater();
       }
-    })();
-    return this.rejoining;
+    } catch {
+      // No reply in time. If the connection is gone, the reconnect joins again; if it is up, the next tick does.
+      this.retryRejoinLater();
+    }
   }
 
   /** @internal */
@@ -643,7 +659,18 @@ export class Room<TView = unknown> {
 
   /** @internal */
   _tick(now: number): void {
-    if (this.closed || !this.attached) return;
+    if (this.closed) return;
+    if (!this.attached) {
+      // A join that failed for a passing reason is tried again while the connection stays up. Without this the room
+      // would stay detached, and silently stale, until the connection happened to drop.
+      if (this.nextRejoinAt !== undefined && now >= this.nextRejoinAt) {
+        this.nextRejoinAt = undefined;
+        void this._rejoin();
+      }
+
+      return;
+    }
+
     if (this.engine.tick(now).length > 0) void this.runSync();
   }
 
@@ -658,6 +685,13 @@ export class Room<TView = unknown> {
     if (notify && reason !== "left") {
       for (const handler of [...this.closedHandlers]) handler({ reason, message });
     }
+  }
+
+  /** Schedules another join, a little later each time (with jitter, so many clients do not all return at once). */
+  private retryRejoinLater(): void {
+    if (this.closed || this.attached) return;
+    this.nextRejoinAt = Date.now() + this.rejoinDelay * (0.75 + Math.random() * 0.5);
+    this.rejoinDelay = Math.min(this.rejoinDelay * 2, this.settings.maxReconnectDelayMs);
   }
 
   private async runSync(): Promise<void> {

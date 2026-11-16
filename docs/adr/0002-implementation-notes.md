@@ -23,6 +23,9 @@ Section numbers refer to the design.
 | 9 | Epochs are opaque; nothing ranks them (§7.6). | Every batch a room sends to a gateway carries an **epoch order**. A gateway replaces the epoch it follows only with a higher-ranked one, and tells the room the newest epoch it has seen whenever it attaches connections; the room then ranks itself above that. Clients still treat `se` as opaque. | A late batch from an old activation could reach a gateway that had never seen that epoch, and was taken for a new epoch. The order starts from the silo's clock; the exchange with the gateway corrects it when clocks differ between silos. |
 | 10 | Limits are checked when a request arrives (§7.15). | Connections per player are counted when a connection is established, and one that goes over the limit is disconnected at once. Room creations take a slot before the room is asked and give it back if nothing was created. | Requests that arrive at the same moment could all pass a check that only read the count. |
 
+| 11 | A gateway delivers each batch as it arrives (§7.9). | A gateway keeps at most 1,024 batches per room waiting to be published and **drops new batches beyond that**. Clients see a gap and catch up with a sync. | Batches that arrived faster than they could be published piled up in memory without a limit; the per-client MQTT queue limit sits after this point and could not help. |
+| 12 | Disconnect notices that failed are retried with the next lease renewal (difference 3). | They are retried **on their own**: each attempt has five seconds, eight run at a time, and a renewal never waits for them. | Retrying them one after another before the renewals let a few unreachable rooms delay the renewals of healthy rooms past their lease timeout. |
+
 ## Differences in structure
 
 - **`AddGrainWire()` for silos lives in `GrainWire.Abstractions`**, not `GrainWire.Server`

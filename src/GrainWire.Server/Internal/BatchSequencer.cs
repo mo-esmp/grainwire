@@ -4,16 +4,29 @@ using GrainWire.Protocol;
 namespace GrainWire.Server.Internal;
 
 /// <summary>
-/// Puts the batches of each room back in the order the room sent them. Rooms send batches with one-way calls, which
-/// Orleans may deliver out of order; every batch carries a number that counts up per room and gateway within an epoch.
-/// A batch that never arrives is skipped after a short wait (clients then repair themselves with a sync).
+/// Puts the batches of each room back in the order the room sent them, and publishes them one at a time.
+/// Rooms send batches with one-way calls, which Orleans may deliver out of order; every batch carries a number that
+/// counts up per room and gateway within an epoch. A batch that never arrives is skipped after a short wait.
 /// Epochs are ranked by <see cref="DeliveryBatch.EpochOrder"/>, never by which one arrived first: a batch of an
 /// older epoch is dropped even if this gateway has not seen that epoch before.
+/// <para>
+/// Both queues of a room are bounded: the batches waiting for a missing one, and the batches waiting to be published.
+/// When publishing cannot keep up, new batches are dropped instead of piling up in memory. Clients see the missing
+/// events as a gap and catch up with a sync, exactly as for a batch lost on the way; a lost <c>$closed</c> notice
+/// is repaired by the next lease renewal.
+/// </para>
 /// </summary>
-internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan gapTimeout)
+internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan gapTimeout, int maxBacklog = BatchSequencer.DefaultMaxBacklog, Action<string>? onOverflow = null)
 {
+    /// <summary>Batches of one room that may wait to be published.</summary>
+    public const int DefaultMaxBacklog = 1024;
+
     private const int MaxPending = 1024;
     private readonly ConcurrentDictionary<string, RoomState> _rooms = new(StringComparer.Ordinal);
+    private long _dropped;
+
+    /// <summary>Batches dropped so far because publishing could not keep up.</summary>
+    public long Dropped => Interlocked.Read(ref _dropped);
 
     public void Accept(DeliveryBatch batch)
     {
@@ -52,11 +65,11 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
                 state.Next = state.Pending.Keys.First();
             }
 
-            Drain(state);
+            Drain(batch.Room, state);
             if (state.Pending.Count > 0 && !state.Waiting)
             {
                 state.Waiting = true;
-                _ = SkipGapLaterAsync(state, state.Next);
+                _ = SkipGapLaterAsync(batch.Room, state, state.Next);
             }
         }
     }
@@ -75,6 +88,20 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
         }
     }
 
+    /// <summary>Batches of a room that are in order and waiting to be published.</summary>
+    public int Backlog(string room)
+    {
+        if (!_rooms.TryGetValue(room, out RoomState? state))
+        {
+            return 0;
+        }
+
+        lock (state)
+        {
+            return state.Ready.Count;
+        }
+    }
+
     /// <summary>Forgets rooms that have been quiet for a while.</summary>
     public void Prune(TimeSpan idle)
     {
@@ -83,7 +110,7 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
         {
             lock (entry.Value)
             {
-                if (entry.Value.LastActivity < cutoff && entry.Value.Pending.Count == 0)
+                if (entry.Value.LastActivity < cutoff && entry.Value.Pending.Count == 0 && entry.Value.Ready.Count == 0 && !entry.Value.Publishing)
                 {
                     _rooms.TryRemove(entry);
                 }
@@ -91,16 +118,64 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
         }
     }
 
-    private void Drain(RoomState state)
+    /// <summary>Moves the batches that are next in line to the publish queue. Call with the room's lock held.</summary>
+    private void Drain(string room, RoomState state)
     {
         while (state.Pending.Remove(state.Next, out DeliveryBatch? batch))
         {
             state.Next++;
-            state.Tail = state.Tail.ContinueWith(_ => publish(batch), TaskScheduler.Default).Unwrap();
+            if (state.Ready.Count >= maxBacklog)
+            {
+                // Publishing cannot keep up. Holding on to the batch would only move the problem into memory.
+                Interlocked.Increment(ref _dropped);
+                if (!state.Overflowing)
+                {
+                    // Report once per episode, not once per batch.
+                    state.Overflowing = true;
+                    onOverflow?.Invoke(room);
+                }
+
+                continue;
+            }
+
+            state.Ready.Enqueue(batch);
+        }
+
+        if (state.Ready.Count > 0 && !state.Publishing)
+        {
+            state.Publishing = true;
+            _ = Task.Run(() => PublishAsync(state));
         }
     }
 
-    private async Task SkipGapLaterAsync(RoomState state, long waitingFor)
+    /// <summary>One at a time per room, so the order is kept.</summary>
+    private async Task PublishAsync(RoomState state)
+    {
+        while (true)
+        {
+            DeliveryBatch? batch;
+            lock (state)
+            {
+                if (!state.Ready.TryDequeue(out batch))
+                {
+                    state.Publishing = false;
+                    state.Overflowing = false;
+                    return;
+                }
+            }
+
+            try
+            {
+                await publish(batch);
+            }
+            catch (Exception)
+            {
+                // The publisher reports its own failures. For clients it is a lost batch: they catch up with a sync.
+            }
+        }
+    }
+
+    private async Task SkipGapLaterAsync(string room, RoomState state, long waitingFor)
     {
         await Task.Delay(gapTimeout);
         lock (state)
@@ -115,13 +190,13 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
             {
                 // Still stuck on the same missing batch: give up on it.
                 state.Next = state.Pending.Keys.First();
-                Drain(state);
+                Drain(room, state);
             }
 
             if (state.Pending.Count > 0)
             {
                 state.Waiting = true;
-                _ = SkipGapLaterAsync(state, state.Next);
+                _ = SkipGapLaterAsync(room, state, state.Next);
             }
         }
     }
@@ -132,8 +207,10 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
         public long EpochOrder;
         public long Next = 1;
         public bool Waiting;
+        public bool Publishing;
+        public bool Overflowing;
         public long LastActivity;
-        public Task Tail = Task.CompletedTask;
         public readonly SortedDictionary<long, DeliveryBatch> Pending = [];
+        public readonly Queue<DeliveryBatch> Ready = new();
     }
 }

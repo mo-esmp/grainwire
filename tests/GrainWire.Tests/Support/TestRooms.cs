@@ -119,6 +119,22 @@ public abstract class CounterRoomBase : RoomGrain<CounterState>
         throw new InvalidOperationException("boom");
     }
 
+    /// <summary>Changes the state, then returns something that cannot be turned into JSON.</summary>
+    [OnMessage("add-then-return-unserializable")]
+    public object AddThenReturnUnserializable(PlayerId player, AddRequest request)
+    {
+        State.Value += request.Amount;
+        Broadcast("changed", new { value = State.Value, by = player.Value });
+        Loop loop = new();
+        loop.Next = loop;
+        return loop;
+    }
+
+    public sealed class Loop
+    {
+        public Loop? Next { get; set; }
+    }
+
     [OnMessage("whisper")]
     public void Whisper(PlayerId player, WhisperRequest request)
     {

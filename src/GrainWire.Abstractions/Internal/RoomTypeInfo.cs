@@ -44,7 +44,7 @@ internal sealed class RoomTypeInfo
     }
 
     public string RoomType { get; }
-    public Dictionary<string, CommandHandler> Handlers { get; } = [with(StringComparer.Ordinal)];
+    public Dictionary<string, CommandHandler> Handlers { get; } = new(StringComparer.Ordinal);
     public bool OverridesOnRejoin { get; }
     public bool OverridesOnPresenceChanged { get; }
     public bool OverridesOnPlayerLeft { get; }
