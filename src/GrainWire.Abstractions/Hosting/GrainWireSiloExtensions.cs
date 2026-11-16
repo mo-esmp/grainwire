@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using GrainWire.Internal;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -73,9 +73,13 @@ internal sealed class RoomGrainValidator(IOptions<GrainTypeOptions> grainTypes) 
     {
         lifecycle.Subscribe(nameof(RoomGrainValidator), ServiceLifecycleStage.RuntimeInitialize, cancellationToken =>
         {
-            foreach (var grainClass in grainTypes.Value.Classes)
+            foreach (Type grainClass in grainTypes.Value.Classes)
             {
-                if (!IsRoomGrain(grainClass) || grainClass.IsAbstract) continue;
+                if (!IsRoomGrain(grainClass) || grainClass.IsAbstract)
+                {
+                    continue;
+                }
+
                 _ = RoomTypeInfo.For(grainClass);
             }
 
@@ -85,9 +89,12 @@ internal sealed class RoomGrainValidator(IOptions<GrainTypeOptions> grainTypes) 
 
     private static bool IsRoomGrain(Type type)
     {
-        for (var current = type.BaseType; current is not null; current = current.BaseType)
+        for (Type? current = type.BaseType; current is not null; current = current.BaseType)
         {
-            if (current.IsGenericType && current.GetGenericTypeDefinition() == typeof(RoomGrain<>)) return true;
+            if (current.IsGenericType && current.GetGenericTypeDefinition() == typeof(RoomGrain<>))
+            {
+                return true;
+            }
         }
 
         return false;

@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using GrainWire.Protocol;
 
 namespace GrainWire.Server.Internal;
@@ -15,18 +15,25 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
 
     public void Accept(DeliveryBatch batch)
     {
-        var state = _rooms.GetOrAdd(batch.Room, static _ => new RoomState());
+        RoomState state = _rooms.GetOrAdd(batch.Room, static _ => new RoomState());
         lock (state)
         {
             state.LastActivity = Environment.TickCount64;
             if (batch.Epoch != state.Epoch)
             {
                 // A batch from an epoch that already ended is stale; anything else starts a new epoch.
-                if (state.PastEpochs.Contains(batch.Epoch)) return;
+                if (state.PastEpochs.Contains(batch.Epoch))
+                {
+                    return;
+                }
+
                 if (state.Epoch is not null)
                 {
                     state.PastEpochs.Enqueue(state.Epoch);
-                    if (state.PastEpochs.Count > 8) state.PastEpochs.Dequeue();
+                    if (state.PastEpochs.Count > 8)
+                    {
+                        state.PastEpochs.Dequeue();
+                    }
                 }
 
                 state.Epoch = batch.Epoch;
@@ -34,9 +41,17 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
                 state.Pending.Clear();
             }
 
-            if (batch.Number < state.Next) return;
+            if (batch.Number < state.Next)
+            {
+                return;
+            }
+
             state.Pending[batch.Number] = batch;
-            if (state.Pending.Count > MaxPending) state.Next = state.Pending.Keys.First();
+            if (state.Pending.Count > MaxPending)
+            {
+                state.Next = state.Pending.Keys.First();
+            }
+
             Drain(state);
             if (state.Pending.Count > 0 && !state.Waiting)
             {
@@ -49,19 +64,22 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
     /// <summary>Forgets rooms that have been quiet for a while.</summary>
     public void Prune(TimeSpan idle)
     {
-        var cutoff = Environment.TickCount64 - (long)idle.TotalMilliseconds;
-        foreach (var entry in _rooms)
+        long cutoff = Environment.TickCount64 - (long)idle.TotalMilliseconds;
+        foreach (KeyValuePair<string, RoomState> entry in _rooms)
         {
             lock (entry.Value)
             {
-                if (entry.Value.LastActivity < cutoff && entry.Value.Pending.Count == 0) _rooms.TryRemove(entry);
+                if (entry.Value.LastActivity < cutoff && entry.Value.Pending.Count == 0)
+                {
+                    _rooms.TryRemove(entry);
+                }
             }
         }
     }
 
     private void Drain(RoomState state)
     {
-        while (state.Pending.Remove(state.Next, out var batch))
+        while (state.Pending.Remove(state.Next, out DeliveryBatch? batch))
         {
             state.Next++;
             state.Tail = state.Tail.ContinueWith(_ => publish(batch), TaskScheduler.Default).Unwrap();
@@ -74,7 +92,11 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
         lock (state)
         {
             state.Waiting = false;
-            if (state.Pending.Count == 0) return;
+            if (state.Pending.Count == 0)
+            {
+                return;
+            }
+
             if (state.Next == waitingFor)
             {
                 // Still stuck on the same missing batch: give up on it.
@@ -97,7 +119,7 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
         public bool Waiting;
         public long LastActivity;
         public Task Tail = Task.CompletedTask;
-        public readonly SortedDictionary<long, DeliveryBatch> Pending = new();
+        public readonly SortedDictionary<long, DeliveryBatch> Pending = [];
         public readonly Queue<string> PastEpochs = new();
     }
 }

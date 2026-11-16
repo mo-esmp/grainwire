@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Reflection;
 using GrainWire.Protocol;
 using Orleans.Concurrency;
@@ -8,23 +8,34 @@ namespace GrainWire.Internal;
 /// <summary>Reflection data about one room grain class, computed once.</summary>
 internal sealed class RoomTypeInfo
 {
-    private static readonly ConcurrentDictionary<Type, RoomTypeInfo> Cache = new();
+    private static readonly ConcurrentDictionary<Type, RoomTypeInfo> s_cache = new();
 
     private RoomTypeInfo(Type grainClass)
     {
-        var attribute = grainClass.GetCustomAttribute<RoomTypeAttribute>(inherit: false)
+        RoomTypeAttribute attribute = grainClass.GetCustomAttribute<RoomTypeAttribute>(inherit: false)
             ?? throw new InvalidOperationException($"{grainClass.FullName} derives from RoomGrain<TState> but has no [RoomType(\"...\")] attribute.");
         RoomType = attribute.Name;
 
         EnsureNotInterleaving(grainClass);
 
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-        foreach (var method in grainClass.GetMethods(flags))
+        foreach (MethodInfo method in grainClass.GetMethods(flags))
         {
-            var onMessage = method.GetCustomAttribute<OnMessageAttribute>(inherit: true);
-            if (onMessage is null) continue;
-            if (!RoomAddress.IsValidSegment(onMessage.Name)) throw new InvalidOperationException($"[OnMessage(\"{onMessage.Name}\")] on {grainClass.Name}.{method.Name} is not a valid command name.");
-            if (!Handlers.TryAdd(onMessage.Name, new CommandHandler(method, onMessage))) throw new InvalidOperationException($"{grainClass.Name} has more than one handler for command '{onMessage.Name}'.");
+            OnMessageAttribute? onMessage = method.GetCustomAttribute<OnMessageAttribute>(inherit: true);
+            if (onMessage is null)
+            {
+                continue;
+            }
+
+            if (!RoomAddress.IsValidSegment(onMessage.Name))
+            {
+                throw new InvalidOperationException($"[OnMessage(\"{onMessage.Name}\")] on {grainClass.Name}.{method.Name} is not a valid command name.");
+            }
+
+            if (!Handlers.TryAdd(onMessage.Name, new CommandHandler(method, onMessage)))
+            {
+                throw new InvalidOperationException($"{grainClass.Name} has more than one handler for command '{onMessage.Name}'.");
+            }
         }
 
         OverridesOnRejoin = IsOverridden(grainClass, "OnRejoin");
@@ -33,12 +44,12 @@ internal sealed class RoomTypeInfo
     }
 
     public string RoomType { get; }
-    public Dictionary<string, CommandHandler> Handlers { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, CommandHandler> Handlers { get; } = [with(StringComparer.Ordinal)];
     public bool OverridesOnRejoin { get; }
     public bool OverridesOnPresenceChanged { get; }
     public bool OverridesOnPlayerLeft { get; }
 
-    public static RoomTypeInfo For(Type grainClass) => Cache.GetOrAdd(grainClass, static t => new RoomTypeInfo(t));
+    public static RoomTypeInfo For(Type grainClass) => s_cache.GetOrAdd(grainClass, static t => new RoomTypeInfo(t));
 
     /// <summary>Throws when <paramref name="grainClass"/> could run two room operations at once.</summary>
     public static void EnsureNotInterleaving(Type grainClass)
@@ -48,9 +59,9 @@ internal sealed class RoomTypeInfo
             throw new InvalidOperationException($"{grainClass.FullName} is a room grain and must not be [Reentrant] or [MayInterleave]: rooms process one operation at a time.");
         }
 
-        foreach (var contract in grainClass.GetInterfaces())
+        foreach (Type contract in grainClass.GetInterfaces())
         {
-            foreach (var method in contract.GetMethods())
+            foreach (MethodInfo method in contract.GetMethods())
             {
                 if (method.IsDefined(typeof(AlwaysInterleaveAttribute), inherit: true) || method.IsDefined(typeof(ReadOnlyAttribute), inherit: true))
                 {
@@ -62,8 +73,8 @@ internal sealed class RoomTypeInfo
 
     private static bool IsOverridden(Type grainClass, string name)
     {
-        var method = grainClass.GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-        var declaring = method?.DeclaringType;
+        MethodInfo? method = grainClass.GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        Type? declaring = method?.DeclaringType;
         return declaring is not null && !(declaring.IsGenericType && declaring.GetGenericTypeDefinition() == typeof(RoomGrain<>));
     }
 }
@@ -79,20 +90,34 @@ internal sealed class CommandHandler
     public CommandHandler(MethodInfo method, OnMessageAttribute attribute)
     {
         _method = method;
-        var parameters = method.GetParameters();
-        var index = 0;
+        ParameterInfo[] parameters = method.GetParameters();
+        int index = 0;
         if (parameters.Length > 0 && parameters[0].ParameterType == typeof(PlayerId))
         {
             _takesPlayer = true;
             index = 1;
         }
 
-        if (parameters.Length - index > 1) throw new InvalidOperationException($"Handler {method.DeclaringType?.Name}.{method.Name} may take a PlayerId and at most one payload parameter.");
-        if (parameters.Length - index == 1) _payloadType = parameters[index].ParameterType;
+        if (parameters.Length - index > 1)
+        {
+            throw new InvalidOperationException($"Handler {method.DeclaringType?.Name}.{method.Name} may take a PlayerId and at most one payload parameter.");
+        }
 
-        var returns = method.ReturnType;
-        if (returns.IsGenericType && returns.GetGenericTypeDefinition() == typeof(Task<>)) _taskResult = returns.GetProperty(nameof(Task<int>.Result));
-        if (returns.IsGenericType && returns.GetGenericTypeDefinition() == typeof(ValueTask<>)) _valueTaskAsTask = returns.GetMethod(nameof(ValueTask<int>.AsTask));
+        if (parameters.Length - index == 1)
+        {
+            _payloadType = parameters[index].ParameterType;
+        }
+
+        Type returns = method.ReturnType;
+        if (returns.IsGenericType && returns.GetGenericTypeDefinition() == typeof(Task<>))
+        {
+            _taskResult = returns.GetProperty(nameof(Task<int>.Result));
+        }
+
+        if (returns.IsGenericType && returns.GetGenericTypeDefinition() == typeof(ValueTask<>))
+        {
+            _valueTaskAsTask = returns.GetMethod(nameof(ValueTask<int>.AsTask));
+        }
 
         if (!string.IsNullOrWhiteSpace(attribute.Roles))
         {
@@ -129,7 +154,7 @@ internal sealed class CommandHandler
             args = _takesPlayer ? [player] : [];
         }
 
-        var returned = _method.Invoke(target, BindingFlags.DoNotWrapExceptions, binder: null, args, culture: null);
+        object? returned = _method.Invoke(target, BindingFlags.DoNotWrapExceptions, binder: null, args, culture: null);
         switch (returned)
         {
             case null:
@@ -143,7 +168,7 @@ internal sealed class CommandHandler
             default:
                 if (_valueTaskAsTask is not null)
                 {
-                    var asTask = (Task)_valueTaskAsTask.Invoke(returned, null)!;
+                    Task asTask = (Task)_valueTaskAsTask.Invoke(returned, null)!;
                     await asTask;
                     return asTask.GetType().GetProperty(nameof(Task<int>.Result))!.GetValue(asTask);
                 }

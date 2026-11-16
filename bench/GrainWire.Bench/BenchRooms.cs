@@ -1,4 +1,4 @@
-namespace GrainWire.Bench;
+﻿namespace GrainWire.Bench;
 
 [GenerateSerializer]
 public sealed class BenchState
@@ -19,7 +19,7 @@ public sealed class BenchRoom : RoomGrain<BenchState>
 {
     protected override Task<CreateResult> OnCreate(CreateContext context)
     {
-        var bytes = Math.Clamp(context.Options.As<BenchCreateOptions>()?.SnapshotBytes ?? 0, 0, 1_000_000);
+        int bytes = Math.Clamp(context.Options.As<BenchCreateOptions>()?.SnapshotBytes ?? 0, 0, 1_000_000);
         State.Blob = new string('s', bytes);
         return Task.FromResult(CreateResult.Allow());
     }

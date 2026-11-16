@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using GrainWire.Server;
 using Microsoft.AspNetCore.Builder;
@@ -16,16 +16,16 @@ public sealed class TestClusterInfo
 {
     public string ClusterId { get; } = "gw-test-" + Guid.NewGuid().ToString("N")[..8];
     public int PrimarySiloPort { get; } = Ports.Next();
-    public List<int> GatewayPorts { get; } = new();
+    public List<int> GatewayPorts { get; } = [];
 }
 
 public static class Ports
 {
     public static int Next()
     {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
+        TcpListener listener = new(IPAddress.Loopback, 0);
         listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
         listener.Stop();
         return port;
     }
@@ -67,9 +67,9 @@ public sealed class TestNode : IAsyncDisposable
 
     private static async Task<TestNode> Start(TestClusterInfo cluster, bool silo, bool primary, bool withGateway, Action<GrainWireGatewayOptions>? gateway)
     {
-        var httpPort = Ports.Next();
-        var siloPort = 0;
-        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
+        int httpPort = Ports.Next();
+        int siloPort = 0;
+        WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
         builder.Logging.ClearProviders();
         builder.Logging.SetMinimumLevel(LogLevel.Error);
         builder.WebHost.UseUrls($"http://127.0.0.1:{httpPort}");
@@ -77,8 +77,8 @@ public sealed class TestNode : IAsyncDisposable
         if (silo)
         {
             siloPort = primary ? cluster.PrimarySiloPort : Ports.Next();
-            var thisSiloPort = siloPort;
-            var gatewayPort = Ports.Next();
+            int thisSiloPort = siloPort;
+            int gatewayPort = Ports.Next();
             cluster.GatewayPorts.Add(gatewayPort);
             builder.UseOrleans(orleans =>
             {
@@ -99,7 +99,7 @@ public sealed class TestNode : IAsyncDisposable
         {
             builder.UseOrleansClient(client =>
             {
-                client.UseLocalhostClustering(cluster.GatewayPorts.ToArray(), cluster.ClusterId, cluster.ClusterId);
+                client.UseLocalhostClustering([.. cluster.GatewayPorts], cluster.ClusterId, cluster.ClusterId);
                 client.AddGrainWireClient();
             });
         }
@@ -113,15 +113,19 @@ public sealed class TestNode : IAsyncDisposable
             });
         }
 
-        var app = builder.Build();
-        if (withGateway) app.MapGrainWire();
+        WebApplication app = builder.Build();
+        if (withGateway)
+        {
+            app.MapGrainWire();
+        }
+
         await app.StartAsync();
         return new TestNode(app, httpPort, withGateway, siloPort);
     }
 
     public async Task StopAsync()
     {
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(20));
         await App.StopAsync(cts.Token);
     }
 

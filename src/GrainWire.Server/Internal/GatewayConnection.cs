@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Threading.Channels;
 
 namespace GrainWire.Server.Internal;
@@ -6,7 +6,7 @@ namespace GrainWire.Server.Internal;
 /// <summary>One live MQTT connection (one browser tab) held by this gateway.</summary>
 internal sealed class GatewayConnection
 {
-    private static long _lastGeneration;
+    private static long s_lastGeneration;
 
     public GatewayConnection(string clientId, PlayerId player, IReadOnlyDictionary<string, string> claims, GrainWireGatewayOptions options)
     {
@@ -48,9 +48,12 @@ internal sealed class GatewayConnection
     {
         while (true)
         {
-            var last = Volatile.Read(ref _lastGeneration);
-            var next = Math.Max(last + 1, DateTime.UtcNow.Ticks);
-            if (Interlocked.CompareExchange(ref _lastGeneration, next, last) == last) return next;
+            long last = Volatile.Read(ref s_lastGeneration);
+            long next = Math.Max(last + 1, DateTime.UtcNow.Ticks);
+            if (Interlocked.CompareExchange(ref s_lastGeneration, next, last) == last)
+            {
+                return next;
+            }
         }
     }
 }
@@ -68,10 +71,14 @@ internal sealed class TokenBucket(double perSecond, int burst)
     {
         lock (_gate)
         {
-            var now = Environment.TickCount64;
+            long now = Environment.TickCount64;
             _tokens = Math.Min(burst, _tokens + ((now - _last) / 1000.0 * perSecond));
             _last = now;
-            if (_tokens < 1) return false;
+            if (_tokens < 1)
+            {
+                return false;
+            }
+
             _tokens -= 1;
             return true;
         }
@@ -85,7 +92,11 @@ internal sealed class PerMinuteLimiter(int limit)
 
     public bool HasRoom(string key)
     {
-        if (!_windows.TryGetValue(key, out var window)) return limit > 0;
+        if (!_windows.TryGetValue(key, out Queue<long>? window))
+        {
+            return limit > 0;
+        }
+
         lock (window)
         {
             Prune(window);
@@ -95,7 +106,7 @@ internal sealed class PerMinuteLimiter(int limit)
 
     public void Record(string key)
     {
-        var window = _windows.GetOrAdd(key, static _ => new Queue<long>());
+        Queue<long> window = _windows.GetOrAdd(key, static _ => new Queue<long>());
         lock (window)
         {
             Prune(window);
@@ -105,7 +116,10 @@ internal sealed class PerMinuteLimiter(int limit)
 
     private static void Prune(Queue<long> window)
     {
-        var cutoff = Environment.TickCount64 - 60_000;
-        while (window.Count > 0 && window.Peek() < cutoff) window.Dequeue();
+        long cutoff = Environment.TickCount64 - 60_000;
+        while (window.Count > 0 && window.Peek() < cutoff)
+        {
+            window.Dequeue();
+        }
     }
 }

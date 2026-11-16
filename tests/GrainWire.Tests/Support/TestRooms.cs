@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Orleans.Runtime;
 using Orleans.Serialization;
@@ -10,7 +10,7 @@ namespace GrainWire.Tests.Support;
 public sealed class CounterState
 {
     [Id(0)] public int Value { get; set; }
-    [Id(1)] public List<string> Log { get; set; } = new();
+    [Id(1)] public List<string> Log { get; set; } = [];
 }
 
 public sealed record CreateOptions(bool Deny = false, int? Start = null);
@@ -29,16 +29,28 @@ public abstract class CounterRoomBase : RoomGrain<CounterState>
 
     protected override Task<CreateResult> OnCreate(CreateContext context)
     {
-        var options = context.Options.As<CreateOptions>();
-        if (options?.Deny == true) return Task.FromResult(CreateResult.Deny("creation denied"));
-        if (options?.Start is { } start) State.Value = start;
+        CreateOptions? options = context.Options.As<CreateOptions>();
+        if (options?.Deny == true)
+        {
+            return Task.FromResult(CreateResult.Deny("creation denied"));
+        }
+
+        if (options?.Start is { } start)
+        {
+            State.Value = start;
+        }
+
         return Task.FromResult(CreateResult.Allow());
     }
 
     protected override Task<JoinResult> OnJoin(JoinContext context)
     {
-        var data = context.Data.As<JoinOptions>();
-        if (data?.Deny == true) return Task.FromResult(JoinResult.Reject("not invited"));
+        JoinOptions? data = context.Data.As<JoinOptions>();
+        if (data?.Deny == true)
+        {
+            return Task.FromResult(JoinResult.Reject("not invited"));
+        }
+
         return Task.FromResult(JoinResult.Accept(context.IsCreator ? "owner" : data?.Role ?? "guest"));
     }
 
@@ -130,7 +142,10 @@ public abstract class CounterRoomBase : RoomGrain<CounterState>
     [OnMessage("burst")]
     public void Burst(PlayerId player, AddRequest request)
     {
-        for (var i = 0; i < request.Amount; i++) Broadcast("noise", new { i, pad = new string('x', 200) });
+        for (int i = 0; i < request.Amount; i++)
+        {
+            Broadcast("noise", new { i, pad = new string('x', 200) });
+        }
     }
 
     [OnMessage("where")]
@@ -211,7 +226,7 @@ public static class TestSilo
 /// <summary>Grain storage kept in a static dictionary, so it survives a silo being stopped. Writes can be made to fail per room.</summary>
 public sealed class SharedTestStorage(Serializer serializer) : IGrainStorage
 {
-    private static readonly ConcurrentDictionary<string, (byte[] Data, string ETag)> Store = new();
+    private static readonly ConcurrentDictionary<string, (byte[] Data, string ETag)> s_store = new();
 
     /// <summary>Room ids whose writes fail.</summary>
     public static readonly ConcurrentDictionary<string, bool> FailWrites = new();
@@ -220,7 +235,7 @@ public sealed class SharedTestStorage(Serializer serializer) : IGrainStorage
 
     public Task ReadStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
     {
-        if (Store.TryGetValue(Key(stateName, grainId), out var stored))
+        if (s_store.TryGetValue(Key(stateName, grainId), out (byte[] Data, string ETag) stored))
         {
             grainState.State = serializer.Deserialize<T>(stored.Data);
             grainState.ETag = stored.ETag;
@@ -238,11 +253,19 @@ public sealed class SharedTestStorage(Serializer serializer) : IGrainStorage
 
     public Task WriteStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
     {
-        if (FailWrites.ContainsKey(grainId.Key.ToString()!)) throw new IOException("Simulated storage failure.");
-        var key = Key(stateName, grainId);
-        if (Store.TryGetValue(key, out var stored) && stored.ETag != grainState.ETag) throw new InconsistentStateException("ETag mismatch.");
-        var etag = Guid.NewGuid().ToString("N");
-        Store[key] = (serializer.SerializeToArray(grainState.State), etag);
+        if (FailWrites.ContainsKey(grainId.Key.ToString()!))
+        {
+            throw new IOException("Simulated storage failure.");
+        }
+
+        string key = Key(stateName, grainId);
+        if (s_store.TryGetValue(key, out (byte[] Data, string ETag) stored) && stored.ETag != grainState.ETag)
+        {
+            throw new InconsistentStateException("ETag mismatch.");
+        }
+
+        string etag = Guid.NewGuid().ToString("N");
+        s_store[key] = (serializer.SerializeToArray(grainState.State), etag);
         grainState.ETag = etag;
         grainState.RecordExists = true;
         Interlocked.Increment(ref WriteCount);
@@ -251,15 +274,19 @@ public sealed class SharedTestStorage(Serializer serializer) : IGrainStorage
 
     public Task ClearStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
     {
-        if (FailWrites.ContainsKey(grainId.Key.ToString()!)) throw new IOException("Simulated storage failure.");
-        Store.TryRemove(Key(stateName, grainId), out _);
+        if (FailWrites.ContainsKey(grainId.Key.ToString()!))
+        {
+            throw new IOException("Simulated storage failure.");
+        }
+
+        s_store.TryRemove(Key(stateName, grainId), out _);
         grainState.State = Activator.CreateInstance<T>();
         grainState.ETag = null;
         grainState.RecordExists = false;
         return Task.CompletedTask;
     }
 
-    public static bool Contains(string roomType, string roomId) => Store.Keys.Any(k => k.EndsWith($"gw-room-{roomType}/{roomId}", StringComparison.Ordinal));
+    public static bool Contains(string roomType, string roomId) => s_store.Keys.Any(k => k.EndsWith($"gw-room-{roomType}/{roomId}", StringComparison.Ordinal));
 
     private static string Key(string stateName, GrainId grainId) => $"{stateName}|{grainId}";
 }

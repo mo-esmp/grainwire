@@ -1,4 +1,4 @@
-using GrainWire;
+﻿using GrainWire;
 
 namespace ChessSample.Server;
 
@@ -14,7 +14,7 @@ public sealed class ChessGameGrain : RoomGrain<GameState>
 
     protected override Task<CreateResult> OnCreate(CreateContext context)
     {
-        var minutes = Math.Clamp(context.Options.As<CreateGameOptions>()?.Minutes ?? 10, 1, 180);
+        int minutes = Math.Clamp(context.Options.As<CreateGameOptions>()?.Minutes ?? 10, 1, 180);
         State.InitialMs = State.WhiteMs = State.BlackMs = minutes * 60_000L;
         return Task.FromResult(CreateResult.Allow());
     }
@@ -44,17 +44,33 @@ public sealed class ChessGameGrain : RoomGrain<GameState>
     [OnMessage("move", Roles = "white,black")]
     public void Move(PlayerId player, MoveRequest request)
     {
-        if (State.Status != GameStatus.Playing) Reject("The game is not in progress.", "not-playing");
-        var mover = SeatOf(player);
-        if (State.Turn != mover) Reject("It is not your turn.", "not-your-turn");
+        if (State.Status != GameStatus.Playing)
+        {
+            Reject("The game is not in progress.", "not-playing");
+        }
 
-        var outcome = ChessRules.TryMove(State.Fen, request.From, request.To, request.Promotion);
-        if (outcome is null) Reject("That move is not legal.", "illegal-move");
+        string mover = SeatOf(player);
+        if (State.Turn != mover)
+        {
+            Reject("It is not your turn.", "not-your-turn");
+        }
+
+        ChessRules.MoveOutcome? outcome = ChessRules.TryMove(State.Fen, request.From, request.To, request.Promotion);
+        if (outcome is null)
+        {
+            Reject("That move is not legal.", "illegal-move");
+        }
 
         // The mover's clock stops, the opponent's starts.
-        var spent = (long)(Now - State.TurnStartedAt!.Value).TotalMilliseconds;
-        if (mover == Seats.White) State.WhiteMs = Math.Max(0, State.WhiteMs - spent);
-        else State.BlackMs = Math.Max(0, State.BlackMs - spent);
+        long spent = (long)(Now - State.TurnStartedAt!.Value).TotalMilliseconds;
+        if (mover == Seats.White)
+        {
+            State.WhiteMs = Math.Max(0, State.WhiteMs - spent);
+        }
+        else
+        {
+            State.BlackMs = Math.Max(0, State.BlackMs - spent);
+        }
 
         State.Fen = outcome.Fen;
         State.Turn = outcome.Turn;
@@ -64,23 +80,44 @@ public sealed class ChessGameGrain : RoomGrain<GameState>
         State.TurnStartedAt = Now;
         Broadcast("moved", new MovedEvent(request.From, request.To, outcome.San, outcome.Fen, outcome.Turn, outcome.Check, State.WhiteMs, State.BlackMs, Now));
 
-        if (outcome.Result is not null) Finish(outcome.Result, outcome.Reason!);
-        else Schedule(Flag, TimeSpan.FromMilliseconds(mover == Seats.White ? State.BlackMs : State.WhiteMs));
+        if (outcome.Result is not null)
+        {
+            Finish(outcome.Result, outcome.Reason!);
+        }
+        else
+        {
+            Schedule(Flag, TimeSpan.FromMilliseconds(mover == Seats.White ? State.BlackMs : State.WhiteMs));
+        }
     }
 
     [OnMessage("resign", Roles = "white,black")]
     public void Resign(PlayerId player)
     {
-        if (State.Status != GameStatus.Playing) Reject("The game is not in progress.", "not-playing");
+        if (State.Status != GameStatus.Playing)
+        {
+            Reject("The game is not in progress.", "not-playing");
+        }
+
         Finish(Seats.Opponent(SeatOf(player)), "resignation");
     }
 
     /// <summary>The clock of the side to move ran out. A deadline survives a server restart because the room is persistent.</summary>
     protected override Task OnDeadline(string name)
     {
-        if (name != Flag || State.Status != GameStatus.Playing) return Task.CompletedTask;
-        if (State.Turn == Seats.White) State.WhiteMs = 0;
-        else State.BlackMs = 0;
+        if (name != Flag || State.Status != GameStatus.Playing)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (State.Turn == Seats.White)
+        {
+            State.WhiteMs = 0;
+        }
+        else
+        {
+            State.BlackMs = 0;
+        }
+
         Finish(Seats.Opponent(State.Turn), "timeout");
         return Task.CompletedTask;
     }
@@ -139,7 +176,7 @@ public sealed class GameState
     [Id(2)] public string Status { get; set; } = GameStatus.Waiting;
     [Id(3)] public string? White { get; set; }
     [Id(4)] public string? Black { get; set; }
-    [Id(5)] public List<string> Moves { get; set; } = new();
+    [Id(5)] public List<string> Moves { get; set; } = [];
     [Id(6)] public string? LastFrom { get; set; }
     [Id(7)] public string? LastTo { get; set; }
     [Id(8)] public long WhiteMs { get; set; }

@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -14,13 +14,16 @@ using MQTTnet.Server;
 //
 //   dotnet run --project tests/GrainWire.TestHost -- --port 5080
 
-var port = 5080;
-for (var i = 0; i < args.Length - 1; i++)
+int port = 5080;
+for (int i = 0; i < args.Length - 1; i++)
 {
-    if (args[i] == "--port") port = int.Parse(args[i + 1]);
+    if (args[i] == "--port")
+    {
+        port = int.Parse(args[i + 1]);
+    }
 }
 
-var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, EnvironmentName = Environments.Development });
+WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, EnvironmentName = Environments.Development });
 builder.Logging.SetMinimumLevel(LogLevel.Warning);
 builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
 builder.UseOrleans(silo =>
@@ -37,21 +40,28 @@ builder.Services.AddGrainWireGateway(options =>
     options.MaxConnectionsPerPlayer = 1000;
 });
 
-var app = builder.Build();
+WebApplication app = builder.Build();
 app.MapGrainWire();
 
 // How many upcoming messages of a given type to drop for a client: "clientId|type" -> remaining.
-var drops = new ConcurrentDictionary<string, int>();
+ConcurrentDictionary<string, int> drops = new();
 app.Services.GetRequiredService<Gateway>().OutboundFilter = (clientId, payload) =>
 {
-    var text = Encoding.UTF8.GetString(payload);
-    foreach (var key in drops.Keys)
+    string text = Encoding.UTF8.GetString(payload);
+    foreach (string key in drops.Keys)
     {
-        var separator = key.IndexOf('|');
-        if (key[..separator] != clientId || !text.Contains($"\"t\":\"{key[(separator + 1)..]}\"", StringComparison.Ordinal)) continue;
-        while (drops.TryGetValue(key, out var remaining) && remaining > 0)
+        int separator = key.IndexOf('|');
+        if (key[..separator] != clientId || !text.Contains($"\"t\":\"{key[(separator + 1)..]}\"", StringComparison.Ordinal))
         {
-            if (drops.TryUpdate(key, remaining - 1, remaining)) return false;
+            continue;
+        }
+
+        while (drops.TryGetValue(key, out int remaining) && remaining > 0)
+        {
+            if (drops.TryUpdate(key, remaining - 1, remaining))
+            {
+                return false;
+            }
         }
     }
 
@@ -77,8 +87,15 @@ app.MapPost("/control/disconnect", async (string clientId, MqttServer server) =>
 // Make saving fail for a persistent room (by room id).
 app.MapPost("/control/fail-writes", (string roomId, bool on) =>
 {
-    if (on) SharedTestStorage.FailWrites[roomId] = true;
-    else SharedTestStorage.FailWrites.TryRemove(roomId, out _);
+    if (on)
+    {
+        SharedTestStorage.FailWrites[roomId] = true;
+    }
+    else
+    {
+        SharedTestStorage.FailWrites.TryRemove(roomId, out _);
+    }
+
     return Results.Ok();
 });
 
@@ -86,9 +103,9 @@ await app.RunAsync();
 
 static int FreePort()
 {
-    var listener = new TcpListener(IPAddress.Loopback, 0);
+    TcpListener listener = new(IPAddress.Loopback, 0);
     listener.Start();
-    var free = ((IPEndPoint)listener.LocalEndpoint).Port;
+    int free = ((IPEndPoint)listener.LocalEndpoint).Port;
     listener.Stop();
     return free;
 }

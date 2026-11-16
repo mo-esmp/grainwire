@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Text;
 using System.Text.RegularExpressions;
 using GrainWire.Protocol;
@@ -8,6 +8,7 @@ using MQTTnet.Formatter;
 using MQTTnet.Packets;
 using MQTTnet.Protocol;
 using MQTTnet.Server;
+using Orleans.Metadata;
 using Orleans.Runtime;
 
 namespace GrainWire.Server.Internal;
@@ -108,7 +109,7 @@ internal sealed partial class Gateway : IGatewayObserver
             return;
         }
 
-        if (_connectionsPerPlayer.TryGetValue(result.Player.Value, out var open) && open >= _options.MaxConnectionsPerPlayer)
+        if (_connectionsPerPlayer.TryGetValue(result.Player.Value, out int open) && open >= _options.MaxConnectionsPerPlayer)
         {
             e.ReasonCode = MqttConnectReasonCode.QuotaExceeded;
             e.ReasonString = "Too many connections for this player.";
@@ -121,7 +122,11 @@ internal sealed partial class Gateway : IGatewayObserver
 
     private Task OnClientConnected(ClientConnectedEventArgs e)
     {
-        if (e.SessionItems[ConnectionKey] is not GatewayConnection connection) return Task.CompletedTask;
+        if (e.SessionItems[ConnectionKey] is not GatewayConnection connection)
+        {
+            return Task.CompletedTask;
+        }
+
         _connections[connection.ClientId] = connection;
         _connectionsPerPlayer.AddOrUpdate(connection.Player.Value, 1, static (_, count) => count + 1);
         connection.Worker = Task.Run(() => ProcessQueueAsync(connection));
@@ -130,11 +135,15 @@ internal sealed partial class Gateway : IGatewayObserver
 
     private Task OnClientDisconnected(ClientDisconnectedEventArgs e)
     {
-        if (e.SessionItems[ConnectionKey] is not GatewayConnection connection || connection.Closed) return Task.CompletedTask;
+        if (e.SessionItems[ConnectionKey] is not GatewayConnection connection || connection.Closed)
+        {
+            return Task.CompletedTask;
+        }
+
         connection.Closed = true;
         _connections.TryRemove(new KeyValuePair<string, GatewayConnection>(connection.ClientId, connection));
         _connectionsPerPlayer.AddOrUpdate(connection.Player.Value, 0, static (_, count) => Math.Max(0, count - 1));
-        if (_connectionsPerPlayer.TryGetValue(connection.Player.Value, out var left) && left == 0)
+        if (_connectionsPerPlayer.TryGetValue(connection.Player.Value, out int left) && left == 0)
         {
             _connectionsPerPlayer.TryRemove(new KeyValuePair<string, int>(connection.Player.Value, 0));
         }
@@ -147,7 +156,11 @@ internal sealed partial class Gateway : IGatewayObserver
     private Task OnSubscription(InterceptingSubscriptionEventArgs e)
     {
         // A connection may subscribe to exactly one topic: its own inbox. No wildcards, no shared subscriptions.
-        if (e.SessionItems[ConnectionKey] is GatewayConnection connection && e.TopicFilter.Topic == Wire.InboxTopic(connection.ClientId)) return Task.CompletedTask;
+        if (e.SessionItems[ConnectionKey] is GatewayConnection connection && e.TopicFilter.Topic == Wire.InboxTopic(connection.ClientId))
+        {
+            return Task.CompletedTask;
+        }
+
         e.ProcessSubscription = false;
         e.Response.ReasonCode = MqttSubscribeReasonCode.NotAuthorized;
         e.ReasonString = "A connection may only subscribe to its own inbox.";
@@ -157,17 +170,35 @@ internal sealed partial class Gateway : IGatewayObserver
     private Task OnPublish(InterceptingPublishEventArgs e)
     {
         // Messages the gateway injected itself. Client ids cannot start with '$', so nobody else can claim this id.
-        if (e.ClientId == Wire.GatewaySender) return Task.CompletedTask;
+        if (e.ClientId == Wire.GatewaySender)
+        {
+            return Task.CompletedTask;
+        }
 
         // Nothing a client publishes is ever routed to another client: it goes to a room grain or nowhere.
         e.ProcessPublish = false;
-        var message = e.ApplicationMessage;
-        if (e.SessionItems[ConnectionKey] is not GatewayConnection connection || connection.Closed) return Refuse(e, MqttPubAckReasonCode.NotAuthorized, "Not connected.");
-        if (message.Retain) return Refuse(e, MqttPubAckReasonCode.NotAuthorized, "Retained messages are not allowed.");
-        if (!ClientTopic.TryParse(message.Topic, out var topic)) return Refuse(e, MqttPubAckReasonCode.NotAuthorized, "Clients may only publish to rooms/{type}/{id}/cmd/{name} or rooms/{type}/{id}/sys/{name}.");
-        if (message.Payload.Length > _options.MaxPayloadBytes) return Refuse(e, MqttPubAckReasonCode.QuotaExceeded, "The message is too large.");
+        MqttApplicationMessage message = e.ApplicationMessage;
+        if (e.SessionItems[ConnectionKey] is not GatewayConnection connection || connection.Closed)
+        {
+            return Refuse(e, MqttPubAckReasonCode.NotAuthorized, "Not connected.");
+        }
 
-        var payload = message.Payload.IsEmpty ? [] : System.Buffers.BuffersExtensions.ToArray(message.Payload);
+        if (message.Retain)
+        {
+            return Refuse(e, MqttPubAckReasonCode.NotAuthorized, "Retained messages are not allowed.");
+        }
+
+        if (!ClientTopic.TryParse(message.Topic, out ClientTopic topic))
+        {
+            return Refuse(e, MqttPubAckReasonCode.NotAuthorized, "Clients may only publish to rooms/{type}/{id}/cmd/{name} or rooms/{type}/{id}/sys/{name}.");
+        }
+
+        if (message.Payload.Length > _options.MaxPayloadBytes)
+        {
+            return Refuse(e, MqttPubAckReasonCode.QuotaExceeded, "The message is too large.");
+        }
+
+        byte[] payload = message.Payload.IsEmpty ? [] : System.Buffers.BuffersExtensions.ToArray(message.Payload);
         if (!connection.Bucket.TryTake())
         {
             _ = ReplyWithoutRoomAsync(connection, topic, payload, RoomReply.Rejected(Wire.Codes.RateLimited, "Too many commands; slow down."));
@@ -194,7 +225,11 @@ internal sealed partial class Gateway : IGatewayObserver
     {
         // The connection cannot keep up. Dropped events would only show up as gaps, so cut it loose: it reconnects and gets a snapshot.
         // Many messages can overflow at once; disconnect only once. The normal disconnect handling then cleans up.
-        if (!_connections.TryGetValue(clientId, out var connection) || Interlocked.Exchange(ref connection.Evicting, 1) == 1) return Task.CompletedTask;
+        if (!_connections.TryGetValue(clientId, out GatewayConnection? connection) || Interlocked.Exchange(ref connection.Evicting, 1) == 1)
+        {
+            return Task.CompletedTask;
+        }
+
         _log.LogWarning("Disconnecting {ClientId}: its outgoing queue overflowed.", clientId);
         _ = Task.Run(async () =>
         {
@@ -214,7 +249,7 @@ internal sealed partial class Gateway : IGatewayObserver
 
     private async Task ProcessQueueAsync(GatewayConnection connection)
     {
-        await foreach (var inbound in connection.Queue.Reader.ReadAllAsync())
+        await foreach (InboundMessage inbound in connection.Queue.Reader.ReadAllAsync())
         {
             try
             {
@@ -229,10 +264,10 @@ internal sealed partial class Gateway : IGatewayObserver
 
     private async Task HandleAsync(GatewayConnection connection, InboundMessage inbound)
     {
-        var topic = inbound.Topic;
-        var room = topic.Room;
-        var roomKey = room.ToString();
-        if (!ClientMessage.TryParse(inbound.Payload, out var message))
+        ClientTopic topic = inbound.Topic;
+        RoomAddress room = topic.Room;
+        string roomKey = room.ToString();
+        if (!ClientMessage.TryParse(inbound.Payload, out ClientMessage? message))
         {
             _log.LogDebug("Dropping a message from {ClientId}: the payload is not a JSON object.", connection.ClientId);
             return;
@@ -272,8 +307,15 @@ internal sealed partial class Gateway : IGatewayObserver
             ForgetRoomIfGone(connection, roomKey, reply);
         }
 
-        if (reply.Snapshot is not null) await PublishAsync(connection.ClientId, Envelopes.Snapshot(roomKey, reply.Snapshot));
-        if (!message.NoReply) await PublishAsync(connection.ClientId, Envelopes.Reply(roomKey, message.CommandId, reply));
+        if (reply.Snapshot is not null)
+        {
+            await PublishAsync(connection.ClientId, Envelopes.Snapshot(roomKey, reply.Snapshot));
+        }
+
+        if (!message.NoReply)
+        {
+            await PublishAsync(connection.ClientId, Envelopes.Reply(roomKey, message.CommandId, reply));
+        }
     }
 
     private async Task<RoomReply> JoinAsync(GatewayConnection connection, RoomAddress room, string roomKey, ClientMessage message)
@@ -284,13 +326,13 @@ internal sealed partial class Gateway : IGatewayObserver
         }
 
         // A player who has used up their creation budget can still join rooms that exist.
-        var mayCreate = message.Create && _creations.HasRoom(connection.Player.Value);
-        var reply = await CallAsync(room, grain => grain.Join(new JoinRequest
+        bool mayCreate = message.Create && _creations.HasRoom(connection.Player.Value);
+        RoomReply reply = await CallAsync(room, grain => grain.Join(new JoinRequest
         {
             Gateway = Ref,
             Connection = connection.Id,
             Player = connection.Player,
-            Claims = connection.Claims.Count == 0 ? null : new Dictionary<string, string>(connection.Claims),
+            Claims = connection.Claims.Count == 0 ? null : [with(connection.Claims)],
             Create = mayCreate,
             Options = message.Options,
             Data = message.JoinData,
@@ -298,10 +340,17 @@ internal sealed partial class Gateway : IGatewayObserver
 
         if (reply.Status == ReplyStatus.Ok)
         {
-            if (reply.Code == Wire.Codes.Created) _creations.Record(connection.Player.Value);
+            if (reply.Code == Wire.Codes.Created)
+            {
+                _creations.Record(connection.Player.Value);
+            }
+
             connection.Rooms[roomKey] = room;
             _directory.GetOrAdd(roomKey, static _ => new RoomAttachments()).Connections[connection.ClientId] = connection;
-            if (connection.Closed) await DropRoomAsync(connection, roomKey, room, detach: true);
+            if (connection.Closed)
+            {
+                await DropRoomAsync(connection, roomKey, room, detach: true);
+            }
         }
         else if (message.Create && !mayCreate && reply.Code == Wire.Codes.RoomNotFound)
         {
@@ -313,15 +362,23 @@ internal sealed partial class Gateway : IGatewayObserver
 
     private async Task<RoomReply> LeaveAsync(GatewayConnection connection, RoomAddress room, string roomKey)
     {
-        if (!connection.Rooms.ContainsKey(roomKey)) return RoomReply.Ok(Wire.Codes.Left);
+        if (!connection.Rooms.ContainsKey(roomKey))
+        {
+            return RoomReply.Ok(Wire.Codes.Left);
+        }
+
         await DropRoomAsync(connection, roomKey, room, detach: false);
         return await CallAsync(room, grain => grain.Leave(new LeaveRequest { Gateway = Id, Connection = connection.Id, Player = connection.Player }));
     }
 
     private async Task<RoomReply> SyncAsync(GatewayConnection connection, RoomAddress room, string roomKey, ClientMessage message)
     {
-        if (!connection.Rooms.ContainsKey(roomKey)) return RoomReply.Error(Wire.Codes.NotJoined, "Join the room first.");
-        var reply = await CallAsync(room, grain => grain.Sync(new SyncRequest
+        if (!connection.Rooms.ContainsKey(roomKey))
+        {
+            return RoomReply.Error(Wire.Codes.NotJoined, "Join the room first.");
+        }
+
+        RoomReply reply = await CallAsync(room, grain => grain.Sync(new SyncRequest
         {
             Gateway = Ref,
             Connection = connection.Id,
@@ -349,16 +406,23 @@ internal sealed partial class Gateway : IGatewayObserver
 
     private void ForgetRoomIfGone(GatewayConnection connection, string roomKey, RoomReply reply)
     {
-        if (reply.Status != ReplyStatus.Error || reply.Code is not (Wire.Codes.RoomNotFound or Wire.Codes.NotMember)) return;
+        if (reply.Status != ReplyStatus.Error || reply.Code is not (Wire.Codes.RoomNotFound or Wire.Codes.NotMember))
+        {
+            return;
+        }
+
         connection.Rooms.TryRemove(roomKey, out _);
-        if (_directory.TryGetValue(roomKey, out var attachments)) attachments.Connections.TryRemove(new KeyValuePair<string, GatewayConnection>(connection.ClientId, connection));
+        if (_directory.TryGetValue(roomKey, out RoomAttachments? attachments))
+        {
+            attachments.Connections.TryRemove(new KeyValuePair<string, GatewayConnection>(connection.ClientId, connection));
+        }
     }
 
     private async Task ReplyWithoutRoomAsync(GatewayConnection connection, ClientTopic topic, byte[] payload, RoomReply reply)
     {
         try
         {
-            if (ClientMessage.TryParse(payload, out var message) && message is { CommandId: not null, NoReply: false })
+            if (ClientMessage.TryParse(payload, out ClientMessage? message) && message is { CommandId: not null, NoReply: false })
             {
                 await PublishAsync(connection.ClientId, Envelopes.Reply(topic.Room.ToString(), message.CommandId, reply));
             }
@@ -371,11 +435,19 @@ internal sealed partial class Gateway : IGatewayObserver
 
     private bool RoomTypeExists(string roomType)
     {
-        if (_knownRoomTypes.ContainsKey(roomType)) return true;
-        var grainType = RoomAddress.GrainTypeFor(roomType);
-        foreach (var manifest in _manifest.Current.AllGrainManifests)
+        if (_knownRoomTypes.ContainsKey(roomType))
         {
-            if (!manifest.Grains.ContainsKey(grainType)) continue;
+            return true;
+        }
+
+        GrainType grainType = RoomAddress.GrainTypeFor(roomType);
+        foreach (GrainManifest manifest in _manifest.Current.AllGrainManifests)
+        {
+            if (!manifest.Grains.ContainsKey(grainType))
+            {
+                continue;
+            }
+
             _knownRoomTypes[roomType] = true;
             return true;
         }
@@ -396,25 +468,32 @@ internal sealed partial class Gateway : IGatewayObserver
     {
         try
         {
-            foreach (var item in batch.Items)
+            foreach (DeliveryItem item in batch.Items)
             {
                 if (!item.Sequenced)
                 {
-                    var notice = Envelopes.Notice(batch, item);
-                    foreach (var target in item.Targets)
+                    byte[] notice = Envelopes.Notice(batch, item);
+                    foreach (DeliveryTarget target in item.Targets)
                     {
-                        if (!_connections.TryGetValue(target.ClientId, out var connection) || !connection.Rooms.TryGetValue(batch.Room, out var room)) continue;
+                        if (!_connections.TryGetValue(target.ClientId, out GatewayConnection? connection) || !connection.Rooms.TryGetValue(batch.Room, out RoomAddress room))
+                        {
+                            continue;
+                        }
+
                         await PublishAsync(target.ClientId, notice);
-                        if (item.Type == Wire.Types.Closed) await DropRoomAsync(connection, batch.Room, room, detach: false);
+                        if (item.Type == Wire.Types.Closed)
+                        {
+                            await DropRoomAsync(connection, batch.Room, room, detach: false);
+                        }
                     }
 
                     continue;
                 }
 
-                var template = new EventTemplate(batch, item);
-                foreach (var target in item.Targets)
+                EventTemplate template = new(batch, item);
+                foreach (DeliveryTarget target in item.Targets)
                 {
-                    if (_connections.TryGetValue(target.ClientId, out var connection) && connection.Rooms.ContainsKey(batch.Room))
+                    if (_connections.TryGetValue(target.ClientId, out GatewayConnection? connection) && connection.Rooms.ContainsKey(batch.Room))
                     {
                         await PublishAsync(target.ClientId, template.Render(target.Seq));
                     }
@@ -432,8 +511,12 @@ internal sealed partial class Gateway : IGatewayObserver
 
     private Task PublishAsync(string clientId, byte[] payload)
     {
-        if (OutboundFilter is { } filter && !filter(clientId, payload)) return Task.CompletedTask;
-        var message = new MqttApplicationMessage
+        if (OutboundFilter is { } filter && !filter(clientId, payload))
+        {
+            return Task.CompletedTask;
+        }
+
+        MqttApplicationMessage message = new()
         {
             Topic = Wire.InboxTopic(clientId),
             PayloadSegment = new ArraySegment<byte>(payload),
@@ -448,7 +531,11 @@ internal sealed partial class Gateway : IGatewayObserver
     {
         get
         {
-            if (_ref is not null) return _ref;
+            if (_ref is not null)
+            {
+                return _ref;
+            }
+
             lock (_refGate)
             {
                 return _ref ??= new GatewayRef { Id = Id, Observer = _grains.CreateObjectReference<IGatewayObserver>(this) };
@@ -463,17 +550,23 @@ internal sealed partial class Gateway : IGatewayObserver
     public async Task RenewLeasesAsync(CancellationToken cancellationToken)
     {
         // Disconnects a room could not be told about earlier.
-        for (var i = _pendingDetaches.Count; i > 0 && _pendingDetaches.TryDequeue(out var pending); i--)
+        for (int i = _pendingDetaches.Count; i > 0 && _pendingDetaches.TryDequeue(out (RoomAddress Room, ConnectionId Connection) pending); i--)
         {
             await DetachAsync(pending.Room, pending.Connection);
         }
 
         _sequencer.Prune(TimeSpan.FromMinutes(10));
-        var rooms = new List<KeyValuePair<string, RoomAttachments>>();
-        foreach (var entry in _directory)
+        List<KeyValuePair<string, RoomAttachments>> rooms = [];
+        foreach (KeyValuePair<string, RoomAttachments> entry in _directory)
         {
-            if (entry.Value.Connections.IsEmpty) _directory.TryRemove(entry);
-            else rooms.Add(entry);
+            if (entry.Value.Connections.IsEmpty)
+            {
+                _directory.TryRemove(entry);
+            }
+            else
+            {
+                rooms.Add(entry);
+            }
         }
 
         await Parallel.ForEachAsync(rooms, new ParallelOptions { MaxDegreeOfParallelism = 32, CancellationToken = cancellationToken }, async (entry, _) => await RenewRoomAsync(entry.Key, entry.Value));
@@ -481,9 +574,13 @@ internal sealed partial class Gateway : IGatewayObserver
 
     private async Task RenewRoomAsync(string roomKey, RoomAttachments attachments)
     {
-        var listed = attachments.Connections.Values.ToList();
-        if (listed.Count == 0) return;
-        var room = listed[0].Rooms.TryGetValue(roomKey, out var address) ? address : ParseRoomKey(roomKey);
+        List<GatewayConnection> listed = [.. attachments.Connections.Values];
+        if (listed.Count == 0)
+        {
+            return;
+        }
+
+        RoomAddress room = listed[0].Rooms.TryGetValue(roomKey, out RoomAddress address) ? address : ParseRoomKey(roomKey);
         RenewReply reply;
         try
         {
@@ -503,21 +600,25 @@ internal sealed partial class Gateway : IGatewayObserver
         {
             if (!reply.RoomExists)
             {
-                foreach (var connection in listed) await CloseLocallyAsync(connection, roomKey, room, Wire.ClosedReasons.Lost);
+                foreach (GatewayConnection connection in listed)
+                {
+                    await CloseLocallyAsync(connection, roomKey, room, Wire.ClosedReasons.Lost);
+                }
+
                 return;
             }
 
-            foreach (var notMember in reply.NotMembers)
+            foreach (ConnectionId notMember in reply.NotMembers)
             {
-                if (_connections.TryGetValue(notMember.ClientId, out var connection) && connection.Generation == notMember.Generation)
+                if (_connections.TryGetValue(notMember.ClientId, out GatewayConnection? connection) && connection.Generation == notMember.Generation)
                 {
                     await CloseLocallyAsync(connection, roomKey, room, Wire.ClosedReasons.Removed);
                 }
             }
 
-            foreach (var snapshot in reply.Snapshots)
+            foreach (ConnectionSnapshot snapshot in reply.Snapshots)
             {
-                if (_connections.TryGetValue(snapshot.Connection.ClientId, out var connection) && connection.Generation == snapshot.Connection.Generation)
+                if (_connections.TryGetValue(snapshot.Connection.ClientId, out GatewayConnection? connection) && connection.Generation == snapshot.Connection.Generation)
                 {
                     await PublishAsync(connection.ClientId, Envelopes.Snapshot(roomKey, snapshot.Snapshot));
                 }
@@ -531,7 +632,11 @@ internal sealed partial class Gateway : IGatewayObserver
 
     private async Task CloseLocallyAsync(GatewayConnection connection, string roomKey, RoomAddress room, string reason)
     {
-        if (!connection.Rooms.ContainsKey(roomKey)) return;
+        if (!connection.Rooms.ContainsKey(roomKey))
+        {
+            return;
+        }
+
         await DropRoomAsync(connection, roomKey, room, detach: false);
         await PublishAsync(connection.ClientId, Envelopes.Closed(roomKey, null, reason, null));
     }
@@ -539,8 +644,15 @@ internal sealed partial class Gateway : IGatewayObserver
     private async Task DropRoomAsync(GatewayConnection connection, string roomKey, RoomAddress room, bool detach)
     {
         connection.Rooms.TryRemove(roomKey, out _);
-        if (_directory.TryGetValue(roomKey, out var attachments)) attachments.Connections.TryRemove(new KeyValuePair<string, GatewayConnection>(connection.ClientId, connection));
-        if (detach) await DetachAsync(room, connection.Id);
+        if (_directory.TryGetValue(roomKey, out RoomAttachments? attachments))
+        {
+            attachments.Connections.TryRemove(new KeyValuePair<string, GatewayConnection>(connection.ClientId, connection));
+        }
+
+        if (detach)
+        {
+            await DetachAsync(room, connection.Id);
+        }
     }
 
     private async Task CleanUpAsync(GatewayConnection connection)
@@ -555,7 +667,7 @@ internal sealed partial class Gateway : IGatewayObserver
             _log.LogDebug(ex, "The worker of {ClientId} ended with an error.", connection.ClientId);
         }
 
-        foreach (var (roomKey, room) in connection.Rooms.ToArray())
+        foreach ((string? roomKey, RoomAddress room) in connection.Rooms.ToArray())
         {
             await DropRoomAsync(connection, roomKey, room, detach: true);
         }
@@ -577,7 +689,7 @@ internal sealed partial class Gateway : IGatewayObserver
 
     private static RoomAddress ParseRoomKey(string roomKey)
     {
-        var slash = roomKey.IndexOf('/');
+        int slash = roomKey.IndexOf('/');
         return new RoomAddress(roomKey[..slash], roomKey[(slash + 1)..]);
     }
 

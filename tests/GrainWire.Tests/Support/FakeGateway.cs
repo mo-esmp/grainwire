@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using GrainWire.Protocol;
@@ -13,7 +13,7 @@ public sealed class ClusterFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var builder = new TestClusterBuilder(1);
+        TestClusterBuilder builder = new(1);
         builder.AddSiloBuilderConfigurator<SiloConfigurator>();
         Cluster = builder.Build();
         await Cluster.DeployAsync();
@@ -41,10 +41,10 @@ public sealed record Delivered(string ClientId, string Type, long Seq, bool Sequ
 /// <summary>Plays the part of a gateway in room-core tests: calls the room grain directly and records what it delivers.</summary>
 public sealed class FakeGateway : IGatewayObserver
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions s_json = new(JsonSerializerDefaults.Web);
     private readonly IGrainFactory _grains;
-    private readonly List<Delivered> _delivered = new();
-    private readonly List<string> _epochs = new();
+    private readonly List<Delivered> _delivered = [];
+    private readonly List<string> _epochs = [];
 
     public FakeGateway(IGrainFactory grains)
     {
@@ -59,13 +59,17 @@ public sealed class FakeGateway : IGatewayObserver
         lock (_delivered)
         {
             // One-way calls can arrive out of order; like the real gateway, order by the room's batch number.
-            var epochKey = batch.Room + "|" + batch.Epoch;
-            if (!_epochs.Contains(epochKey)) _epochs.Add(epochKey);
-            var epoch = _epochs.IndexOf(epochKey);
-            for (var i = 0; i < batch.Items.Count; i++)
+            string epochKey = batch.Room + "|" + batch.Epoch;
+            if (!_epochs.Contains(epochKey))
             {
-                var item = batch.Items[i];
-                foreach (var target in item.Targets)
+                _epochs.Add(epochKey);
+            }
+
+            int epoch = _epochs.IndexOf(epochKey);
+            for (int i = 0; i < batch.Items.Count; i++)
+            {
+                DeliveryItem item = batch.Items[i];
+                foreach (DeliveryTarget target in item.Targets)
                 {
                     _delivered.Add(new Delivered(target.ClientId, item.Type, target.Seq, item.Sequenced, batch.Epoch, item.Data is null ? null : Encoding.UTF8.GetString(item.Data), (epoch, batch.Number, i)));
                 }
@@ -77,22 +81,36 @@ public sealed class FakeGateway : IGatewayObserver
 
     public List<Delivered> For(string clientId)
     {
-        lock (_delivered) return _delivered.Where(d => d.ClientId == clientId).OrderBy(d => d.Order).ToList();
+        lock (_delivered)
+        {
+            return [.. _delivered.Where(d => d.ClientId == clientId).OrderBy(d => d.Order)];
+        }
     }
 
     public List<Delivered> All()
     {
-        lock (_delivered) return _delivered.ToList();
+        lock (_delivered)
+        {
+            return [.. _delivered];
+        }
     }
 
     public async Task<List<Delivered>> WaitFor(string clientId, Func<List<Delivered>, bool> condition, int timeoutMs = 5000)
     {
-        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         while (true)
         {
-            var events = For(clientId);
-            if (condition(events)) return events;
-            if (DateTime.UtcNow > deadline) throw new TimeoutException($"Condition not met for {clientId}. Got: {string.Join(", ", events.Select(e => $"{e.Type}#{e.Seq}"))}");
+            List<Delivered> events = For(clientId);
+            if (condition(events))
+            {
+                return events;
+            }
+
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException($"Condition not met for {clientId}. Got: {string.Join(", ", events.Select(e => $"{e.Type}#{e.Seq}"))}");
+            }
+
             await Task.Delay(20);
         }
     }
@@ -140,14 +158,14 @@ public sealed class FakeGateway : IGatewayObserver
         Room(room).Renew(new RenewRequest
         {
             Gateway = Ref,
-            Connections = connections.Select(c => new RenewEntry { Connection = new ConnectionId(c.ClientId, 1), Player = new PlayerId(c.Player) }).ToList(),
+            Connections = [.. connections.Select(c => new RenewEntry { Connection = new ConnectionId(c.ClientId, 1), Player = new PlayerId(c.Player) })],
         });
 
-    public static T Read<T>(byte[]? data) => JsonSerializer.Deserialize<T>(data!, Json)!;
+    public static T Read<T>(byte[]? data) => JsonSerializer.Deserialize<T>(data!, s_json)!;
 
     public static JsonElement ReadJson(byte[]? data) => JsonDocument.Parse(data ?? "null"u8.ToArray()).RootElement;
 
-    private static byte[]? Bytes(object? value) => value is null ? null : JsonSerializer.SerializeToUtf8Bytes(value, Json);
+    private static byte[]? Bytes(object? value) => value is null ? null : JsonSerializer.SerializeToUtf8Bytes(value, s_json);
 }
 
 public static class Rooms

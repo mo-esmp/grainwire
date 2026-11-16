@@ -1,4 +1,4 @@
-using Orleans.Concurrency;
+﻿using Orleans.Concurrency;
 
 namespace GrainWire.Protocol;
 
@@ -76,14 +76,14 @@ public sealed class LeaveRequest
 public sealed class DetachRequest
 {
     [Id(0)] public GatewayId Gateway { get; set; }
-    [Id(1)] public List<ConnectionId> Connections { get; set; } = new();
+    [Id(1)] public List<ConnectionId> Connections { get; set; } = [];
 }
 
 [GenerateSerializer]
 public sealed class RenewRequest
 {
     [Id(0)] public GatewayRef Gateway { get; set; } = null!;
-    [Id(1)] public List<RenewEntry> Connections { get; set; } = new();
+    [Id(1)] public List<RenewEntry> Connections { get; set; } = [];
 }
 
 [GenerateSerializer]
@@ -99,9 +99,9 @@ public sealed class RenewReply
     /// <summary>False when the room does not exist (any more): the gateway tells its connections the room was lost.</summary>
     [Id(0)] public bool RoomExists { get; set; }
     /// <summary>Connections whose player is not a member (any more).</summary>
-    [Id(1)] public List<ConnectionId> NotMembers { get; set; } = new();
+    [Id(1)] public List<ConnectionId> NotMembers { get; set; } = [];
     /// <summary>Snapshots for connections that were attached by this renewal.</summary>
-    [Id(2)] public List<ConnectionSnapshot> Snapshots { get; set; } = new();
+    [Id(2)] public List<ConnectionSnapshot> Snapshots { get; set; } = [];
 }
 
 [GenerateSerializer]
@@ -147,7 +147,7 @@ public sealed class SnapshotData
     [Id(1)] public string Epoch { get; set; } = "";
     [Id(2)] public long At { get; set; }
     [Id(3)] public byte[]? View { get; set; }
-    [Id(4)] public List<MemberInfo> Members { get; set; } = new();
+    [Id(4)] public List<MemberInfo> Members { get; set; } = [];
     [Id(5)] public MemberInfo You { get; set; } = null!;
 }
 
@@ -166,7 +166,7 @@ public sealed class DeliveryBatch
     [Id(0)] public string Room { get; set; } = "";
     [Id(1)] public string Incarnation { get; set; } = "";
     [Id(2)] public string Epoch { get; set; } = "";
-    [Id(3)] public List<DeliveryItem> Items { get; set; } = new();
+    [Id(3)] public List<DeliveryItem> Items { get; set; } = [];
 
     /// <summary>Counts up per room and gateway within an epoch, starting at 1, so a gateway can restore the order of batches.</summary>
     [Id(4)] public long Number { get; set; }
@@ -179,7 +179,7 @@ public sealed class DeliveryItem
     [Id(1)] public byte[]? Data { get; set; }
     /// <summary>False for notices outside the per-player sequence (<c>$closed</c>).</summary>
     [Id(2)] public bool Sequenced { get; set; } = true;
-    [Id(3)] public List<DeliveryTarget> Targets { get; set; } = new();
+    [Id(3)] public List<DeliveryTarget> Targets { get; set; } = [];
 }
 
 [GenerateSerializer]

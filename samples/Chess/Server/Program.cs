@@ -1,10 +1,10 @@
-using GrainWire;
+﻿using GrainWire;
 using GrainWire.Server;
 
 // The GrainWire chess sample: one process that is an Orleans silo, the MQTT gateway, and the web server
 // for the browser client (built into wwwroot by samples/Chess/Web).
 
-var builder = WebApplication.CreateBuilder(args);
+WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 builder.UseOrleans(silo =>
 {
@@ -27,7 +27,7 @@ builder.UseOrleans(silo =>
 // the name a player types is trusted as their identity. Replace it before going live.
 builder.Services.AddGrainWireGateway();
 
-var app = builder.Build();
+WebApplication app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapGrainWire();

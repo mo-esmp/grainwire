@@ -1,4 +1,4 @@
-using ChessSample.Server;
+﻿using ChessSample.Server;
 
 namespace GrainWire.Tests;
 
@@ -7,7 +7,7 @@ public class ChessSampleTests
 {
     private static ChessRules.MoveOutcome Play(ref string fen, string from, string to, string? promotion = null)
     {
-        var outcome = ChessRules.TryMove(fen, from, to, promotion);
+        ChessRules.MoveOutcome? outcome = ChessRules.TryMove(fen, from, to, promotion);
         Assert.NotNull(outcome);
         fen = outcome.Fen;
         return outcome;
@@ -16,8 +16,8 @@ public class ChessSampleTests
     [Fact]
     public void Legal_moves_are_played_and_illegal_ones_are_refused()
     {
-        var fen = ChessRules.StartFen;
-        var first = Play(ref fen, "e2", "e4");
+        string fen = ChessRules.StartFen;
+        ChessRules.MoveOutcome first = Play(ref fen, "e2", "e4");
         Assert.Equal("e4", first.San);
         Assert.Equal(Seats.Black, first.Turn);
         Assert.Null(first.Result);
@@ -31,11 +31,11 @@ public class ChessSampleTests
     [Fact]
     public void Checkmate_ends_the_game_for_the_side_that_delivered_it()
     {
-        var fen = ChessRules.StartFen;
+        string fen = ChessRules.StartFen;
         Play(ref fen, "f2", "f3");
         Play(ref fen, "e7", "e5");
         Play(ref fen, "g2", "g4");
-        var mate = Play(ref fen, "d8", "h4");
+        ChessRules.MoveOutcome mate = Play(ref fen, "d8", "h4");
         Assert.Equal((Seats.Black, "checkmate"), (mate.Result, mate.Reason));
         Assert.Contains("#", mate.San);
     }
@@ -43,8 +43,8 @@ public class ChessSampleTests
     [Fact]
     public void Castling_is_entered_as_a_king_move()
     {
-        var fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1";
-        var castle = Play(ref fen, "e1", "g1");
+        string fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1";
+        ChessRules.MoveOutcome castle = Play(ref fen, "e1", "g1");
         Assert.Equal("O-O", castle.San);
         Assert.StartsWith("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R4RK1 b kq", fen);
         Assert.Equal("O-O-O", Play(ref fen, "e8", "c8").San);
@@ -57,7 +57,7 @@ public class ChessSampleTests
     [InlineData("r", 'R')]
     public void A_pawn_promotes_to_the_chosen_piece_and_to_a_queen_by_default(string? promotion, char expected)
     {
-        var fen = "8/P6k/8/8/8/8/8/K7 w - - 0 1";
+        string fen = "8/P6k/8/8/8/8/8/K7 w - - 0 1";
         Play(ref fen, "a7", "a8", promotion);
         Assert.StartsWith($"{expected}7/7k", fen);
     }
@@ -65,14 +65,14 @@ public class ChessSampleTests
     [Fact]
     public void En_passant_and_stalemate_are_handled()
     {
-        var fen = "4k3/8/8/8/1p6/8/P7/4K3 w - - 0 1";
+        string fen = "4k3/8/8/8/1p6/8/P7/4K3 w - - 0 1";
         Play(ref fen, "a2", "a4");
-        var capture = Play(ref fen, "b4", "a3");
+        ChessRules.MoveOutcome capture = Play(ref fen, "b4", "a3");
         Assert.StartsWith("4k3/8/8/8/8/p7/8/4K3 w", fen);
         Assert.Contains("x", capture.San);
 
-        var almost = "7k/5Q2/8/8/8/8/8/K7 w - - 0 1";
-        var stalemate = Play(ref almost, "f7", "g6");
+        string almost = "7k/5Q2/8/8/8/8/8/K7 w - - 0 1";
+        ChessRules.MoveOutcome stalemate = Play(ref almost, "f7", "g6");
         Assert.Equal(("draw", "stalemate"), (stalemate.Result, stalemate.Reason));
     }
 }

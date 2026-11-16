@@ -1,4 +1,4 @@
-using GrainWire.Protocol;
+﻿using GrainWire.Protocol;
 
 namespace GrainWire.Storage;
 
@@ -14,13 +14,13 @@ public sealed class RoomRecord<TState> where TState : class, new()
     [Id(2)] public TState State { get; set; } = new();
 
     /// <summary>Members by player id.</summary>
-    [Id(3)] public Dictionary<string, MemberRecord> Members { get; set; } = new();
+    [Id(3)] public Dictionary<string, MemberRecord> Members { get; set; } = [];
 
     /// <summary>Outcomes of recent commands by player id, for retry de-duplication.</summary>
-    [Id(4)] public Dictionary<string, List<DedupEntry>> Dedup { get; set; } = new();
+    [Id(4)] public Dictionary<string, List<DedupEntry>> Dedup { get; set; } = [];
 
     /// <summary>Scheduled deadlines by name.</summary>
-    [Id(5)] public Dictionary<string, DateTimeOffset> Deadlines { get; set; } = new();
+    [Id(5)] public Dictionary<string, DateTimeOffset> Deadlines { get; set; } = [];
 
     [Id(6)] public DateTimeOffset CreatedAt { get; set; }
 }

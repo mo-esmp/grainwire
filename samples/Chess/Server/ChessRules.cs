@@ -1,4 +1,4 @@
-using Chess;
+﻿using Chess;
 
 namespace ChessSample.Server;
 
@@ -12,9 +12,13 @@ public static class ChessRules
     /// <summary>Plays a move on the position. Returns null when the move is not legal.</summary>
     public static MoveOutcome? TryMove(string fen, string? from, string? to, string? promotion)
     {
-        if (from is not { Length: 2 } || to is not { Length: 2 }) return null;
-        var board = ChessBoard.LoadFromFen(fen, AutoEndgameRules.InsufficientMaterial | AutoEndgameRules.FiftyMoveRule);
-        var promoteTo = promotion?.ToLowerInvariant() switch
+        if (from is not { Length: 2 } || to is not { Length: 2 })
+        {
+            return null;
+        }
+
+        ChessBoard board = ChessBoard.LoadFromFen(fen, AutoEndgameRules.InsufficientMaterial | AutoEndgameRules.FiftyMoveRule);
+        PromotionType promoteTo = promotion?.ToLowerInvariant() switch
         {
             "r" => PromotionType.ToRook,
             "b" => PromotionType.ToBishop,
@@ -24,19 +28,34 @@ public static class ChessRules
         board.OnPromotePawn += (_, e) => e.PromotionResult = promoteTo;
 
         Move? chosen = null;
-        foreach (var candidate in board.Moves(allowAmbiguousCastle: false, generateSan: false))
+        foreach (Move candidate in board.Moves(allowAmbiguousCastle: false, generateSan: false))
         {
-            if (Square(candidate.OriginalPosition) != from || Square(candidate.NewPosition) != to) continue;
-            if (candidate.Parameter is MovePromotion offered && offered.PromotionType != PromotionType.Default && offered.PromotionType != promoteTo) continue;
+            if (Square(candidate.OriginalPosition) != from || Square(candidate.NewPosition) != to)
+            {
+                continue;
+            }
+
+            if (candidate.Parameter is MovePromotion offered && offered.PromotionType != PromotionType.Default && offered.PromotionType != promoteTo)
+            {
+                continue;
+            }
+
             chosen = candidate;
             break;
         }
 
-        if (chosen is null) return null;
-        if (!board.Move(chosen)) return null;
+        if (chosen is null)
+        {
+            return null;
+        }
 
-        var played = board.ExecutedMoves[^1];
-        var san = played.San ?? board.ParseToSan(played);
+        if (!board.Move(chosen))
+        {
+            return null;
+        }
+
+        Move played = board.ExecutedMoves[^1];
+        string san = played.San ?? board.ParseToSan(played);
         string? result = null;
         string? reason = null;
         if (board.IsEndGame && board.EndGame is { } end)

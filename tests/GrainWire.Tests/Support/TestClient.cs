@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using MQTTnet;
 using MQTTnet.Formatter;
@@ -9,9 +9,9 @@ namespace GrainWire.Tests.Support;
 /// <summary>A bare MQTT client that speaks the GrainWire protocol by hand, for testing the server without the TypeScript client.</summary>
 public sealed class TestClient : IAsyncDisposable
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions s_json = new(JsonSerializerDefaults.Web);
     private readonly IMqttClient _client;
-    private readonly List<JsonElement> _inbox = new();
+    private readonly List<JsonElement> _inbox = [];
 
     private TestClient(IMqttClient client, string clientId, string player)
     {
@@ -31,16 +31,20 @@ public sealed class TestClient : IAsyncDisposable
     public static async Task<TestClient> ConnectAsync(string url, string player, string? clientId = null, Action<MqttClientOptionsBuilder>? configure = null, bool subscribe = true)
     {
         clientId ??= NewClientId();
-        var mqtt = new MqttClientFactory().CreateMqttClient();
-        var client = new TestClient(mqtt, clientId, player);
+        IMqttClient mqtt = new MqttClientFactory().CreateMqttClient();
+        TestClient client = new(mqtt, clientId, player);
         mqtt.ApplicationMessageReceivedAsync += e =>
         {
-            var element = JsonDocument.Parse(e.ApplicationMessage.ConvertPayloadToString() ?? "null").RootElement;
-            lock (client._inbox) client._inbox.Add(element);
+            JsonElement element = JsonDocument.Parse(e.ApplicationMessage.ConvertPayloadToString() ?? "null").RootElement;
+            lock (client._inbox)
+            {
+                client._inbox.Add(element);
+            }
+
             return Task.CompletedTask;
         };
 
-        var options = new MqttClientOptionsBuilder()
+        MqttClientOptionsBuilder options = new MqttClientOptionsBuilder()
             .WithWebSocketServer(o => o.WithUri(url))
             .WithProtocolVersion(MqttProtocolVersion.V500)
             .WithClientId(clientId)
@@ -57,8 +61,11 @@ public sealed class TestClient : IAsyncDisposable
 
         if (subscribe)
         {
-            var result = await mqtt.SubscribeAsync(client.InboxTopic);
-            if (result.Items.First().ResultCode != MqttClientSubscribeResultCode.GrantedQoS0) throw new InvalidOperationException("Inbox subscription refused: " + result.Items.First().ResultCode);
+            MqttClientSubscribeResult result = await mqtt.SubscribeAsync(client.InboxTopic);
+            if (result.Items.First().ResultCode != MqttClientSubscribeResultCode.GrantedQoS0)
+            {
+                throw new InvalidOperationException("Inbox subscription refused: " + result.Items.First().ResultCode);
+            }
         }
 
         return client;
@@ -78,11 +85,15 @@ public sealed class TestClient : IAsyncDisposable
     public async Task<JsonElement> Request(string room, string path, Dictionary<string, object?>? body = null, string? commandId = null, int timeoutMs = 10000)
     {
         commandId ??= Guid.NewGuid().ToString("N");
-        body ??= new();
+        body ??= [];
         body["cmd"] = commandId;
-        var published = await Publish($"rooms/{room}/{path}", JsonSerializer.Serialize(body, Json));
-        if (!published.IsSuccess) throw new InvalidOperationException($"Publish refused: {published.ReasonCode} {published.ReasonString}");
-        var messages = await WaitFor(all => all.Any(m => IsReply(m, commandId)), timeoutMs);
+        MqttClientPublishResult published = await Publish($"rooms/{room}/{path}", JsonSerializer.Serialize(body, s_json));
+        if (!published.IsSuccess)
+        {
+            throw new InvalidOperationException($"Publish refused: {published.ReasonCode} {published.ReasonString}");
+        }
+
+        List<JsonElement> messages = await WaitFor(all => all.Any(m => IsReply(m, commandId)), timeoutMs);
         return messages.First(m => IsReply(m, commandId));
     }
 
@@ -97,20 +108,27 @@ public sealed class TestClient : IAsyncDisposable
 
     public List<JsonElement> Inbox()
     {
-        lock (_inbox) return _inbox.ToList();
+        lock (_inbox)
+        {
+            return [.. _inbox];
+        }
     }
 
     /// <summary>Messages for one room, optionally of one type.</summary>
     public List<JsonElement> Of(string room, string? type = null) =>
-        Inbox().Where(m => m.GetProperty("room").GetString() == room && (type is null || m.GetProperty("t").GetString() == type)).ToList();
+        [.. Inbox().Where(m => m.GetProperty("room").GetString() == room && (type is null || m.GetProperty("t").GetString() == type))];
 
     public async Task<List<JsonElement>> WaitFor(Func<List<JsonElement>, bool> condition, int timeoutMs = 10000)
     {
-        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         while (true)
         {
-            var inbox = Inbox();
-            if (condition(inbox)) return inbox;
+            List<JsonElement> inbox = Inbox();
+            if (condition(inbox))
+            {
+                return inbox;
+            }
+
             if (DateTime.UtcNow > deadline)
             {
                 throw new TimeoutException("Condition not met. Inbox: " + string.Join(" | ", inbox.Select(m => m.GetRawText())));
@@ -131,7 +149,10 @@ public sealed class TestClient : IAsyncDisposable
     {
         try
         {
-            if (_client.IsConnected) await _client.DisconnectAsync();
+            if (_client.IsConnected)
+            {
+                await _client.DisconnectAsync();
+            }
         }
         catch
         {
@@ -142,7 +163,7 @@ public sealed class TestClient : IAsyncDisposable
     }
 
     private static bool IsReply(JsonElement message, string commandId) =>
-        message.GetProperty("t").GetString() == "$reply" && message.TryGetProperty("cmd", out var cmd) && cmd.GetString() == commandId;
+        message.GetProperty("t").GetString() == "$reply" && message.TryGetProperty("cmd", out JsonElement cmd) && cmd.GetString() == commandId;
 }
 
 public sealed class ConnectRefusedException(MqttClientConnectResultCode code, string? reason) : Exception($"{code}: {reason}")
@@ -153,7 +174,7 @@ public sealed class ConnectRefusedException(MqttClientConnectResultCode code, st
 
 public static class JsonElementExtensions
 {
-    public static string? Str(this JsonElement element, string property) => element.TryGetProperty(property, out var value) ? value.GetString() : null;
+    public static string? Str(this JsonElement element, string property) => element.TryGetProperty(property, out JsonElement value) ? value.GetString() : null;
 
     public static long Num(this JsonElement element, string property) => element.GetProperty(property).GetInt64();
 

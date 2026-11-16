@@ -1,4 +1,4 @@
-using GrainWire.Server.Internal;
+﻿using GrainWire.Server.Internal;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -19,7 +19,7 @@ public static class GrainWireGatewayExtensions
     /// </summary>
     public static IServiceCollection AddGrainWireGateway(this IServiceCollection services, Action<GrainWireGatewayOptions>? configure = null)
     {
-        var options = new GrainWireGatewayOptions();
+        GrainWireGatewayOptions options = new();
         configure?.Invoke(options);
         services.AddSingleton(options);
 
@@ -40,8 +40,8 @@ public static class GrainWireGatewayExtensions
     /// <summary>Maps the MQTT-over-WebSockets endpoint (default <c>/mqtt</c>) and starts routing.</summary>
     public static WebApplication MapGrainWire(this WebApplication app)
     {
-        var options = app.Services.GetRequiredService<GrainWireGatewayOptions>();
-        var gateway = app.Services.GetRequiredService<Gateway>();
+        GrainWireGatewayOptions options = app.Services.GetRequiredService<GrainWireGatewayOptions>();
+        Gateway gateway = app.Services.GetRequiredService<Gateway>();
         app.MapMqtt(options.Path);
         app.UseMqttServer(gateway.Attach);
         return app;
@@ -55,7 +55,7 @@ internal sealed class LeaseRenewalService(Gateway gateway, GrainWireGatewayOptio
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(options.LeaseRenewInterval);
+        using PeriodicTimer timer = new(options.LeaseRenewInterval);
         try
         {
             while (await timer.WaitForNextTickAsync(stoppingToken))

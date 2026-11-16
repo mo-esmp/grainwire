@@ -1,4 +1,4 @@
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using Orleans.Metadata;
 using Orleans.Runtime;
 
@@ -10,7 +10,11 @@ public sealed class RoomTypeAttribute : Attribute, IGrainTypeProviderAttribute
 {
     public RoomTypeAttribute(string name)
     {
-        if (!RoomAddress.IsValidSegment(name)) throw new ArgumentException($"'{name}' is not a valid room type name.", nameof(name));
+        if (!RoomAddress.IsValidSegment(name))
+        {
+            throw new ArgumentException($"'{name}' is not a valid room type name.", nameof(name));
+        }
+
         Name = name;
     }
 

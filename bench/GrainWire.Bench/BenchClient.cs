@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
@@ -12,28 +12,28 @@ namespace GrainWire.Bench;
 /// <summary>A minimal GrainWire client for load generation: joins a room, sends commands, timestamps what arrives.</summary>
 public sealed class BenchClient : IAsyncDisposable
 {
-    private static readonly MqttClientFactory Factory = new();
-    private readonly IMqttClient _mqtt = Factory.CreateMqttClient();
+    private static readonly MqttClientFactory s_factory = new();
+    private readonly IMqttClient _mqtt = s_factory.CreateMqttClient();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _replies = new();
     private readonly string _clientId = Guid.NewGuid().ToString("N");
     private readonly string _player;
     private TaskCompletionSource _snapshot = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _commandCounter;
-    private static long _received;
+    private static long s_received;
 
     /// <summary>Messages received by all clients so far.</summary>
-    public static long Received => Interlocked.Read(ref _received);
+    public static long Received => Interlocked.Read(ref s_received);
 
     /// <summary>Waits until no client has received anything for a second. Returns how long that took.</summary>
     public static async Task<TimeSpan> WaitForQuietAsync()
     {
-        var watch = Stopwatch.StartNew();
-        var last = Received;
-        var quietSince = watch.Elapsed;
+        Stopwatch watch = Stopwatch.StartNew();
+        long last = Received;
+        TimeSpan quietSince = watch.Elapsed;
         while (watch.Elapsed < TimeSpan.FromMinutes(2))
         {
             await Task.Delay(100);
-            var now = Received;
+            long now = Received;
             if (now != last)
             {
                 last = now;
@@ -54,15 +54,19 @@ public sealed class BenchClient : IAsyncDisposable
         _mqtt.DisconnectedAsync += _ => Disconnected?.Invoke() ?? Task.CompletedTask;
         _mqtt.ApplicationMessageReceivedAsync += e =>
         {
-            var now = Stopwatch.GetTimestamp();
-            Interlocked.Increment(ref _received);
-            var reader = new Utf8JsonReader(e.ApplicationMessage.Payload);
+            long now = Stopwatch.GetTimestamp();
+            Interlocked.Increment(ref s_received);
+            Utf8JsonReader reader = new(e.ApplicationMessage.Payload);
             string? type = null, command = null;
             long sentAt = 0;
-            var ok = false;
+            bool ok = false;
             while (reader.Read())
             {
-                if (reader.TokenType != JsonTokenType.PropertyName) continue;
+                if (reader.TokenType != JsonTokenType.PropertyName)
+                {
+                    continue;
+                }
+
                 if (reader.ValueTextEquals("t"u8)) { reader.Read(); type = reader.GetString(); }
                 else if (reader.ValueTextEquals("cmd"u8)) { reader.Read(); command = reader.GetString(); }
                 else if (reader.ValueTextEquals("status"u8)) { reader.Read(); ok = reader.ValueTextEquals("ok"u8); }
@@ -70,9 +74,19 @@ public sealed class BenchClient : IAsyncDisposable
                 else if (reader.ValueTextEquals("pad"u8) || reader.ValueTextEquals("blob"u8)) { reader.Read(); }
             }
 
-            if (type == "$reply" && command is not null && _replies.TryRemove(command, out var waiting)) waiting.TrySetResult(ok);
-            else if (type == "$snapshot") _snapshot.TrySetResult();
-            else if (type == "said" && sentAt != 0) events.Record(Stopwatch.GetElapsedTime(sentAt, now));
+            if (type == "$reply" && command is not null && _replies.TryRemove(command, out TaskCompletionSource<bool>? waiting))
+            {
+                waiting.TrySetResult(ok);
+            }
+            else if (type == "$snapshot")
+            {
+                _snapshot.TrySetResult();
+            }
+            else if (type == "said" && sentAt != 0)
+            {
+                events.Record(Stopwatch.GetElapsedTime(sentAt, now));
+            }
+
             return Task.CompletedTask;
         };
     }
@@ -81,7 +95,7 @@ public sealed class BenchClient : IAsyncDisposable
 
     public async Task ConnectAsync(string url)
     {
-        var options = new MqttClientOptionsBuilder()
+        MqttClientOptions options = new MqttClientOptionsBuilder()
             .WithWebSocketServer(o => o.WithUri(url))
             .WithProtocolVersion(MqttProtocolVersion.V500)
             .WithClientId(_clientId)
@@ -90,8 +104,12 @@ public sealed class BenchClient : IAsyncDisposable
             .WithTimeout(TimeSpan.FromSeconds(60))
             .WithKeepAlivePeriod(TimeSpan.FromSeconds(60))
             .Build();
-        var result = await _mqtt.ConnectAsync(options);
-        if (result.ResultCode != MqttClientConnectResultCode.Success) throw new InvalidOperationException($"Connect refused: {result.ResultCode} {result.ReasonString}");
+        MqttClientConnectResult result = await _mqtt.ConnectAsync(options);
+        if (result.ResultCode != MqttClientConnectResultCode.Success)
+        {
+            throw new InvalidOperationException($"Connect refused: {result.ResultCode} {result.ReasonString}");
+        }
+
         await _mqtt.SubscribeAsync($"clients/{_clientId}/inbox");
     }
 
@@ -99,8 +117,12 @@ public sealed class BenchClient : IAsyncDisposable
     public async Task JoinAsync(string room, bool create, int snapshotBytes)
     {
         _snapshot = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var body = create ? $",\"create\":true,\"options\":{{\"snapshotBytes\":{snapshotBytes}}}" : "";
-        if (!await RequestAsync($"rooms/{room}/sys/join", body)) throw new InvalidOperationException($"{_player} could not join {room}");
+        string body = create ? $",\"create\":true,\"options\":{{\"snapshotBytes\":{snapshotBytes}}}" : "";
+        if (!await RequestAsync($"rooms/{room}/sys/join", body))
+        {
+            throw new InvalidOperationException($"{_player} could not join {room}");
+        }
+
         await _snapshot.Task.WaitAsync(TimeSpan.FromSeconds(60));
     }
 
@@ -110,10 +132,10 @@ public sealed class BenchClient : IAsyncDisposable
 
     private async Task<bool> RequestAsync(string topic, string bodyAfterCommandId)
     {
-        var command = $"{_clientId[..8]}-{Interlocked.Increment(ref _commandCounter)}";
-        var waiting = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        string command = $"{_clientId[..8]}-{Interlocked.Increment(ref _commandCounter)}";
+        TaskCompletionSource<bool> waiting = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _replies[command] = waiting;
-        var payload = Encoding.UTF8.GetBytes($"{{\"cmd\":\"{command}\"{bodyAfterCommandId}}}");
+        byte[] payload = Encoding.UTF8.GetBytes($"{{\"cmd\":\"{command}\"{bodyAfterCommandId}}}");
         await _mqtt.PublishAsync(new MqttApplicationMessage { Topic = topic, PayloadSegment = payload, QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce });
         try
         {
@@ -131,7 +153,10 @@ public sealed class BenchClient : IAsyncDisposable
         Disconnected = null;
         try
         {
-            if (_mqtt.IsConnected) await _mqtt.DisconnectAsync();
+            if (_mqtt.IsConnected)
+            {
+                await _mqtt.DisconnectAsync();
+            }
         }
         catch
         {
@@ -145,7 +170,7 @@ public sealed class BenchClient : IAsyncDisposable
 /// <summary>Collects latency samples and reports percentiles.</summary>
 public sealed class Stats
 {
-    private readonly ConcurrentBag<double> _samples = new();
+    private readonly ConcurrentBag<double> _samples = [];
 
     public void Record(TimeSpan elapsed) => _samples.Add(elapsed.TotalMilliseconds);
 
@@ -153,8 +178,12 @@ public sealed class Stats
 
     public (double P50, double P95, double P99, double Max) Percentiles()
     {
-        var sorted = _samples.ToArray();
-        if (sorted.Length == 0) return (0, 0, 0, 0);
+        double[] sorted = [.. _samples];
+        if (sorted.Length == 0)
+        {
+            return (0, 0, 0, 0);
+        }
+
         Array.Sort(sorted);
         double At(double p) => sorted[Math.Min(sorted.Length - 1, (int)(p * sorted.Length))];
         return (At(0.50), At(0.95), At(0.99), sorted[^1]);

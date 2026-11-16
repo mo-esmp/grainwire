@@ -1,4 +1,4 @@
-namespace GrainWire.Protocol;
+﻿namespace GrainWire.Protocol;
 
 /// <summary>Names used on the wire. See docs/protocol.md.</summary>
 public static class Wire

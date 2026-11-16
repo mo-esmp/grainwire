@@ -1,4 +1,4 @@
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using GrainWire.Internal;
 using GrainWire.Protocol;
 using GrainWire.Storage;
@@ -21,7 +21,7 @@ namespace GrainWire;
 public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class, new()
 {
     private const string StateName = "grainwire-room";
-    private static readonly IReadOnlyDictionary<string, string> NoClaims = new Dictionary<string, string>();
+    private static readonly IReadOnlyDictionary<string, string> s_noClaims = new Dictionary<string, string>();
 
     private readonly RoomTypeInfo _info;
     private readonly RoomOptions _options;
@@ -34,17 +34,17 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     // Not durable, by design: a new stream epoch and fresh presence on every activation.
     private readonly string _epoch = NewId();
-    private readonly Dictionary<string, MemberRuntime> _runtime = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, string> _connectionOwner = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, GatewayLease> _gateways = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, IGrainTimer> _deadlineTimers = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, long> _batchNumbers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, MemberRuntime> _runtime = [with(StringComparer.Ordinal)];
+    private readonly Dictionary<string, string> _connectionOwner = [with(StringComparer.Ordinal)];
+    private readonly Dictionary<string, GatewayLease> _gateways = [with(StringComparer.Ordinal)];
+    private readonly Dictionary<string, IGrainTimer> _deadlineTimers = [with(StringComparer.Ordinal)];
+    private readonly Dictionary<string, long> _batchNumbers = [with(StringComparer.Ordinal)];
     private Operation? _op;
 
     protected RoomGrain()
     {
         _info = RoomTypeInfo.For(GetType());
-        var services = GrainContext.ActivationServices;
+        IServiceProvider services = GrainContext.ActivationServices;
         _options = services.GetService<IOptionsMonitor<RoomOptions>>()?.Get(_info.RoomType) ?? new RoomOptions();
         _serializer = services.GetService<IRoomSerializer>() ?? new JsonRoomSerializer();
         _copier = services.GetRequiredService<DeepCopier>();
@@ -80,14 +80,18 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     {
         get
         {
-            var list = new List<RoomMember>(Record.Members.Count);
-            foreach (var member in Record.Members.Values) list.Add(ToRoomMember(member));
+            List<RoomMember> list = [with(Record.Members.Count)];
+            foreach (MemberRecord member in Record.Members.Values)
+            {
+                list.Add(ToRoomMember(member));
+            }
+
             return list;
         }
     }
 
     protected RoomMember? FindMember(PlayerId player) =>
-        player.Value is not null && Record.Members.TryGetValue(player.Value, out var member) ? ToRoomMember(member) : null;
+        player.Value is not null && Record.Members.TryGetValue(player.Value, out MemberRecord? member) ? ToRoomMember(member) : null;
 
     /// <summary>Decides whether <see cref="CreateContext.Creator"/> may create this room. Default: allow.</summary>
     protected virtual Task<CreateResult> OnCreate(CreateContext context) => Task.FromResult(CreateResult.Allow());
@@ -140,7 +144,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     /// <summary>Closes the room for everyone and deletes it when the current command commits.</summary>
     protected void CloseRoom(string? reason = null)
     {
-        var scope = CurrentScope();
+        Scope scope = CurrentScope();
         scope.Close = true;
         scope.CloseMessage = reason;
     }
@@ -165,13 +169,20 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
             return;
         }
 
-        var op = Begin();
+        Operation op = Begin();
         try
         {
-            var failure = await Guarded(action);
-            if (failure is not null) throw failure;
+            Exception? failure = await Guarded(action);
+            if (failure is not null)
+            {
+                throw failure;
+            }
+
             op.NeedsSave = true;
-            if (!await CommitAsync(op)) throw new RoomNotCommittedException();
+            if (!await CommitAsync(op))
+            {
+                throw new RoomNotCommittedException();
+            }
         }
         finally
         {
@@ -184,12 +195,12 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     async Task<RoomReply> IRoomGrain.Join(JoinRequest request)
     {
         TouchGateway(request.Gateway);
-        var player = request.Player.Value;
-        var claims = (IReadOnlyDictionary<string, string>?)request.Claims ?? NoClaims;
-        var op = Begin();
+        string player = request.Player.Value;
+        IReadOnlyDictionary<string, string> claims = (IReadOnlyDictionary<string, string>?)request.Claims ?? s_noClaims;
+        Operation op = Begin();
         try
         {
-            var created = false;
+            bool created = false;
             if (!Record.Exists)
             {
                 if (!request.Create)
@@ -199,7 +210,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
                 }
 
                 CreateResult? creation = null;
-                var createFailure = await Guarded(async () => creation = await OnCreate(new CreateContext(request.Player, claims, Payload(request.Options))));
+                Exception? createFailure = await Guarded(async () => creation = await OnCreate(new CreateContext(request.Player, claims, Payload(request.Options))));
                 if (createFailure is not null || creation is not { Allowed: true })
                 {
                     DeactivateOnIdle();
@@ -215,15 +226,23 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
                 op.NeedsSave = true;
             }
 
-            var context = new JoinContext(request.Player, claims, Payload(request.Data), created);
+            JoinContext context = new(request.Player, claims, Payload(request.Data), created);
             if (Record.Members.ContainsKey(player))
             {
                 if (_info.OverridesOnRejoin)
                 {
                     JoinResult? rejoin = null;
-                    var failure = await Guarded(async () => rejoin = await OnRejoin(context));
-                    if (failure is not null) return FailureReply(failure, Wire.Codes.JoinRejected, nameof(OnRejoin));
-                    if (rejoin is not { Accepted: true }) return RoomReply.Rejected(Wire.Codes.JoinRejected, rejoin?.Reason);
+                    Exception? failure = await Guarded(async () => rejoin = await OnRejoin(context));
+                    if (failure is not null)
+                    {
+                        return FailureReply(failure, Wire.Codes.JoinRejected, nameof(OnRejoin));
+                    }
+
+                    if (rejoin is not { Accepted: true })
+                    {
+                        return RoomReply.Rejected(Wire.Codes.JoinRejected, rejoin?.Reason);
+                    }
+
                     op.NeedsSave = true;
                 }
             }
@@ -237,14 +256,24 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
                 }
                 else
                 {
-                    var failure = await Guarded(async () => join = await OnJoin(context));
-                    if (failure is not null) refusal = FailureReply(failure, Wire.Codes.JoinRejected, nameof(OnJoin));
-                    else if (join is not { Accepted: true }) refusal = RoomReply.Rejected(Wire.Codes.JoinRejected, join?.Reason);
+                    Exception? failure = await Guarded(async () => join = await OnJoin(context));
+                    if (failure is not null)
+                    {
+                        refusal = FailureReply(failure, Wire.Codes.JoinRejected, nameof(OnJoin));
+                    }
+                    else if (join is not { Accepted: true })
+                    {
+                        refusal = RoomReply.Rejected(Wire.Codes.JoinRejected, join?.Reason);
+                    }
                 }
 
                 if (refusal is not null)
                 {
-                    if (created) UndoCreate();
+                    if (created)
+                    {
+                        UndoCreate();
+                    }
+
                     return refusal;
                 }
 
@@ -255,9 +284,12 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
             }
 
             Attach(request.Connection, player, request.Gateway.Id.Value);
-            if (!await CommitAsync(op)) return RoomReply.Error(Wire.Codes.NotCommitted);
+            if (!await CommitAsync(op))
+            {
+                return RoomReply.Error(Wire.Codes.NotCommitted);
+            }
 
-            var reply = RoomReply.Ok(created ? Wire.Codes.Created : Wire.Codes.Joined);
+            RoomReply reply = RoomReply.Ok(created ? Wire.Codes.Created : Wire.Codes.Joined);
             reply.Incarnation = Record.Incarnation;
             reply.Snapshot = BuildSnapshot(player);
             return reply;
@@ -271,7 +303,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     async Task<RoomReply> IRoomGrain.Command(CommandRequest request)
     {
         TouchGateway(request.Gateway);
-        var player = request.Player.Value;
+        string player = request.Player.Value;
         if (!Record.Exists)
         {
             DeactivateOnIdle();
@@ -279,25 +311,40 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
         }
 
         // 1. Validate. The grain is the authority; the gateway's own checks can be stale.
-        if (request.Incarnation is { } incarnation && incarnation != Record.Incarnation) return RoomReply.Error(Wire.Codes.StaleRoom);
-        if (!Record.Members.TryGetValue(player, out var member)) return RoomReply.Error(Wire.Codes.NotMember);
-        if (!_info.Handlers.TryGetValue(request.Name, out var handler)) return RoomReply.Error(Wire.Codes.UnknownCommand, $"This room has no command '{request.Name}'.");
+        if (request.Incarnation is { } incarnation && incarnation != Record.Incarnation)
+        {
+            return RoomReply.Error(Wire.Codes.StaleRoom);
+        }
+
+        if (!Record.Members.TryGetValue(player, out MemberRecord? member))
+        {
+            return RoomReply.Error(Wire.Codes.NotMember);
+        }
+
+        if (!_info.Handlers.TryGetValue(request.Name, out CommandHandler? handler))
+        {
+            return RoomReply.Error(Wire.Codes.UnknownCommand, $"This room has no command '{request.Name}'.");
+        }
+
         if (handler.Roles is not null && (member.Role is null || !handler.Roles.Contains(member.Role)))
         {
             return RoomReply.Rejected(Wire.Codes.Forbidden, "Your role may not send this command.");
         }
 
         // 2. De-duplicate: a retried command returns its recorded outcome and does nothing else.
-        if (request.CommandId is { } commandId && TryGetRecorded(player, commandId, out var recorded)) return recorded;
+        if (request.CommandId is { } commandId && TryGetRecorded(player, commandId, out RoomReply? recorded))
+        {
+            return recorded;
+        }
 
-        var op = Begin();
+        Operation op = Begin();
         try
         {
-            var attached = Attach(request.Connection, player, request.Gateway.Id.Value);
+            bool attached = Attach(request.Connection, player, request.Gateway.Id.Value);
 
             // 3 + 4. Protect state, run the handler with its outbox.
             object? result = null;
-            var failure = await Guarded(async () => result = await handler.Invoke(this, request.Player, request.Data, _serializer));
+            Exception? failure = await Guarded(async () => result = await handler.Invoke(this, request.Player, request.Data, _serializer));
 
             // 5 + 6. Outcome, commit, then release.
             RoomReply reply;
@@ -311,8 +358,15 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
                 reply = RoomReply.Ok(data: _serializer.Serialize(result));
                 reply.Incarnation = Record.Incarnation;
                 op.NeedsSave = true;
-                if (request.CommandId is not null) Remember(player, request.CommandId, reply);
-                if (!await CommitAsync(op)) reply = RoomReply.Error(Wire.Codes.NotCommitted);
+                if (request.CommandId is not null)
+                {
+                    Remember(player, request.CommandId, reply);
+                }
+
+                if (!await CommitAsync(op))
+                {
+                    reply = RoomReply.Error(Wire.Codes.NotCommitted);
+                }
             }
 
             if (attached && Record.Exists && Record.Members.ContainsKey(player))
@@ -332,28 +386,31 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     async Task<RoomReply> IRoomGrain.Sync(SyncRequest request)
     {
         TouchGateway(request.Gateway);
-        var player = request.Player.Value;
+        string player = request.Player.Value;
         if (!Record.Exists)
         {
             DeactivateOnIdle();
             return RoomReply.Error(Wire.Codes.RoomNotFound);
         }
 
-        if (!Record.Members.ContainsKey(player)) return RoomReply.Error(Wire.Codes.NotMember);
+        if (!Record.Members.ContainsKey(player))
+        {
+            return RoomReply.Error(Wire.Codes.NotMember);
+        }
 
-        var op = Begin();
+        Operation op = Begin();
         try
         {
-            var attached = Attach(request.Connection, player, request.Gateway.Id.Value);
+            bool attached = Attach(request.Connection, player, request.Gateway.Id.Value);
             await CommitAsync(op);
 
-            var position = _runtime[player].Seq;
+            long position = _runtime[player].Seq;
             if (!attached && request.Incarnation == Record.Incarnation && request.Epoch == _epoch && request.Seq == position)
             {
                 return RoomReply.Ok(Wire.Codes.InSync);
             }
 
-            var reply = RoomReply.Ok(Wire.Codes.Resynced);
+            RoomReply reply = RoomReply.Ok(Wire.Codes.Resynced);
             reply.Incarnation = Record.Incarnation;
             reply.Snapshot = BuildSnapshot(player);
             return reply;
@@ -372,7 +429,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
             return RoomReply.Error(Wire.Codes.RoomNotFound);
         }
 
-        var op = Begin();
+        Operation op = Begin();
         try
         {
             DetachConnection(request.Connection);
@@ -393,10 +450,14 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
             return;
         }
 
-        var op = Begin();
+        Operation op = Begin();
         try
         {
-            foreach (var connection in request.Connections) DetachConnection(connection);
+            foreach (ConnectionId connection in request.Connections)
+            {
+                DetachConnection(connection);
+            }
+
             await CommitAsync(op);
         }
         finally
@@ -407,7 +468,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     async Task<RenewReply> IRoomGrain.Renew(RenewRequest request)
     {
-        var reply = new RenewReply { RoomExists = Record.Exists };
+        RenewReply reply = new() { RoomExists = Record.Exists };
         if (!Record.Exists)
         {
             DeactivateOnIdle();
@@ -415,12 +476,12 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
         }
 
         TouchGateway(request.Gateway);
-        var gateway = request.Gateway.Id.Value;
-        var op = Begin();
+        string gateway = request.Gateway.Id.Value;
+        Operation op = Begin();
         try
         {
             List<(ConnectionId Connection, string Player)>? newlyAttached = null;
-            foreach (var entry in request.Connections)
+            foreach (RenewEntry entry in request.Connections)
             {
                 if (!Record.Members.ContainsKey(entry.Player.Value))
                 {
@@ -428,7 +489,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
                 }
                 else if (Attach(entry.Connection, entry.Player.Value, gateway))
                 {
-                    (newlyAttached ??= new()).Add((entry.Connection, entry.Player.Value));
+                    (newlyAttached ??= []).Add((entry.Connection, entry.Player.Value));
                 }
             }
 
@@ -436,9 +497,12 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
             if (newlyAttached is not null)
             {
-                foreach (var (connection, player) in newlyAttached)
+                foreach ((ConnectionId connection, string? player) in newlyAttached)
                 {
-                    if (Record.Members.ContainsKey(player)) reply.Snapshots.Add(new ConnectionSnapshot { Connection = connection, Snapshot = BuildSnapshot(player) });
+                    if (Record.Members.ContainsKey(player))
+                    {
+                        reply.Snapshots.Add(new ConnectionSnapshot { Connection = connection, Snapshot = BuildSnapshot(player) });
+                    }
                 }
             }
 
@@ -456,7 +520,11 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     private Operation Begin()
     {
-        if (_op is not null) throw new InvalidOperationException("A room operation is already running. Room grains must not be reentrant.");
+        if (_op is not null)
+        {
+            throw new InvalidOperationException("A room operation is already running. Room grains must not be reentrant.");
+        }
+
         return _op = new Operation();
     }
 
@@ -471,11 +539,11 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     /// </summary>
     private async Task<Exception?> Guarded(Func<Task> body)
     {
-        var op = _op!;
-        var outer = op.Current;
-        var scope = new Scope();
+        Operation op = _op!;
+        Scope outer = op.Current;
+        Scope scope = new();
         op.Current = scope;
-        var backup = _options.Rollback == RollbackMode.Copy ? _copier.Copy(Record.State) : null;
+        TState? backup = _options.Rollback == RollbackMode.Copy ? _copier.Copy(Record.State) : null;
         try
         {
             await body();
@@ -514,50 +582,82 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     /// <summary>Applies what the operation decided, saves it, and only then lets events out.</summary>
     private async Task<bool> CommitAsync(Operation op)
     {
-        if (op.Poisoned) return false;
+        if (op.Poisoned)
+        {
+            return false;
+        }
 
         if (_info.OverridesOnPresenceChanged && op.PresenceChanges.Count > 0)
         {
-            foreach (var (player, status) in op.PresenceChanges.ToArray())
+            foreach ((string? player, PresenceStatus status) in op.PresenceChanges.ToArray())
             {
-                var failure = await Guarded(() => OnPresenceChanged(new PlayerId(player), status));
-                if (failure is not null) _log.LogError(failure, "OnPresenceChanged failed in room {Room}.", RoomId);
-                else op.NeedsSave = true;
+                Exception? failure = await Guarded(() => OnPresenceChanged(new PlayerId(player), status));
+                if (failure is not null)
+                {
+                    _log.LogError(failure, "OnPresenceChanged failed in room {Room}.", RoomId);
+                }
+                else
+                {
+                    op.NeedsSave = true;
+                }
             }
 
-            if (op.Poisoned) return false;
+            if (op.Poisoned)
+            {
+                return false;
+            }
         }
 
-        var scope = op.Current;
-        var record = Record;
+        Scope scope = op.Current;
+        RoomRecord<TState> record = Record;
 
-        foreach (var (player, role) in scope.RoleChanges)
+        foreach ((string? player, string? role) in scope.RoleChanges)
         {
-            if (!record.Members.TryGetValue(player, out var member) || member.Role == role) continue;
+            if (!record.Members.TryGetValue(player, out MemberRecord? member) || member.Role == role)
+            {
+                continue;
+            }
+
             member.Role = role;
-            scope.Events.Add(PresenceEvent(player, _runtime.TryGetValue(player, out var rt) ? rt.Status : PresenceStatus.Reconnecting, role, includeSelf: true));
+            scope.Events.Add(PresenceEvent(player, _runtime.TryGetValue(player, out MemberRuntime? rt) ? rt.Status : PresenceStatus.Reconnecting, role, includeSelf: true));
         }
 
-        foreach (var (name, due) in scope.DeadlineChanges)
+        foreach ((string? name, DateTimeOffset? due) in scope.DeadlineChanges)
         {
-            if (due is { } at) record.Deadlines[name] = at;
-            else record.Deadlines.Remove(name);
+            if (due is { } at)
+            {
+                record.Deadlines[name] = at;
+            }
+            else
+            {
+                record.Deadlines.Remove(name);
+            }
         }
 
         List<Removal>? removed = null;
-        foreach (var removal in scope.Removals)
+        foreach (Removal removal in scope.Removals)
         {
-            if (!record.Members.Remove(removal.Player)) continue;
+            if (!record.Members.Remove(removal.Player))
+            {
+                continue;
+            }
+
             record.Dedup.Remove(removal.Player);
-            (removed ??= new()).Add(removal);
+            (removed ??= []).Add(removal);
         }
 
         if (_storage is not null && op.NeedsSave)
         {
             try
             {
-                if (scope.Close) await _storage.ClearStateAsync();
-                else await _storage.WriteStateAsync();
+                if (scope.Close)
+                {
+                    await _storage.ClearStateAsync();
+                }
+                else
+                {
+                    await _storage.WriteStateAsync();
+                }
             }
             catch (Exception ex)
             {
@@ -568,29 +668,43 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
         }
 
         // Committed. From here on nothing can fail the operation.
-        foreach (var (name, due) in scope.DeadlineChanges)
+        foreach ((string? name, DateTimeOffset? due) in scope.DeadlineChanges)
         {
-            if (due is { } at) ArmDeadline(name, at);
-            else DisarmDeadline(name);
+            if (due is { } at)
+            {
+                ArmDeadline(name, at);
+            }
+            else
+            {
+                DisarmDeadline(name);
+            }
         }
 
         // Everything this operation sends goes out as one numbered batch per gateway, so gateways can keep the order.
-        var batches = new Dictionary<string, DeliveryBatch>(StringComparer.Ordinal);
+        Dictionary<string, DeliveryBatch> batches = [with(StringComparer.Ordinal)];
         Stamp(scope.Events, batches);
 
         if (removed is not null)
         {
-            var followUp = new List<OutEvent>();
-            foreach (var removal in removed)
+            List<OutEvent> followUp = [];
+            foreach (Removal removal in removed)
             {
-                if (!_runtime.Remove(removal.Player, out var runtime)) continue;
+                if (!_runtime.Remove(removal.Player, out MemberRuntime? runtime))
+                {
+                    continue;
+                }
+
                 runtime.GraceTimer?.Dispose();
                 if (removal.ClosedReason is not null && runtime.Connections.Count > 0)
                 {
-                    followUp.Add(ClosedNotice(removal.ClosedReason, removal.Message, runtime.Connections.Select(c => (c.Value.Gateway, c.Key)).ToList()));
+                    followUp.Add(ClosedNotice(removal.ClosedReason, removal.Message, [.. runtime.Connections.Select(c => (c.Value.Gateway, c.Key))]));
                 }
 
-                foreach (var clientId in runtime.Connections.Keys) _connectionOwner.Remove(clientId);
+                foreach (string clientId in runtime.Connections.Keys)
+                {
+                    _connectionOwner.Remove(clientId);
+                }
+
                 followUp.Add(PresenceEvent(removal.Player, PresenceStatus.Left, null));
             }
 
@@ -599,8 +713,12 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
         if (scope.Close)
         {
-            var everyone = _runtime.Values.SelectMany(r => r.Connections.Select(c => (c.Value.Gateway, c.Key))).ToList();
-            if (everyone.Count > 0) Stamp([ClosedNotice(Wire.ClosedReasons.Closed, scope.CloseMessage, everyone)], batches);
+            List<(string Gateway, string Key)> everyone = [.. _runtime.Values.SelectMany(r => r.Connections.Select(c => (c.Value.Gateway, c.Key)))];
+            if (everyone.Count > 0)
+            {
+                Stamp([ClosedNotice(Wire.ClosedReasons.Closed, scope.CloseMessage, everyone)], batches);
+            }
+
             Send(batches);
             Teardown();
         }
@@ -620,18 +738,18 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     /// <summary>Gives each event its per-player sequence numbers and sorts it into the batch of each gateway involved.</summary>
     private void Stamp(List<OutEvent> events, Dictionary<string, DeliveryBatch> batches)
     {
-        foreach (var outgoing in events)
+        foreach (OutEvent outgoing in events)
         {
             Dictionary<string, DeliveryItem>? items = null;
 
             void Add(string gateway, string clientId, long seq)
             {
-                items ??= new(StringComparer.Ordinal);
-                if (!items.TryGetValue(gateway, out var item))
+                items ??= [with(StringComparer.Ordinal)];
+                if (!items.TryGetValue(gateway, out DeliveryItem? item))
                 {
                     item = new DeliveryItem { Type = outgoing.Type, Data = outgoing.Data, Sequenced = outgoing.Sequenced };
                     items[gateway] = item;
-                    if (!batches.TryGetValue(gateway, out var batch))
+                    if (!batches.TryGetValue(gateway, out DeliveryBatch? batch))
                     {
                         batch = new DeliveryBatch { Room = $"{RoomType}/{RoomId}", Incarnation = Record.Incarnation ?? "", Epoch = _epoch };
                         batches[gateway] = batch;
@@ -645,35 +763,52 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
             if (outgoing.Targets is not null)
             {
-                foreach (var (gateway, clientId) in outgoing.Targets) Add(gateway, clientId, 0);
+                foreach ((string? gateway, string? clientId) in outgoing.Targets)
+                {
+                    Add(gateway, clientId, 0);
+                }
+
                 continue;
             }
 
             if (outgoing.Only is not null)
             {
-                if (_runtime.TryGetValue(outgoing.Only, out var only)) Advance(only);
+                if (_runtime.TryGetValue(outgoing.Only, out MemberRuntime? only))
+                {
+                    Advance(only);
+                }
+
                 continue;
             }
 
-            foreach (var (player, runtime) in _runtime)
+            foreach ((string? player, MemberRuntime? runtime) in _runtime)
             {
-                if (player != outgoing.Except) Advance(runtime);
+                if (player != outgoing.Except)
+                {
+                    Advance(runtime);
+                }
             }
 
             void Advance(MemberRuntime runtime)
             {
                 // Every member's position advances, attached or not: a returning member's snapshot starts from it.
-                var seq = ++runtime.Seq;
-                foreach (var (clientId, connection) in runtime.Connections) Add(connection.Gateway, clientId, seq);
+                long seq = ++runtime.Seq;
+                foreach ((string? clientId, AttachedConnection connection) in runtime.Connections)
+                {
+                    Add(connection.Gateway, clientId, seq);
+                }
             }
         }
     }
 
     private void Send(Dictionary<string, DeliveryBatch> batches)
     {
-        foreach (var (gateway, batch) in batches)
+        foreach ((string? gateway, DeliveryBatch? batch) in batches)
         {
-            if (!_gateways.TryGetValue(gateway, out var lease)) continue;
+            if (!_gateways.TryGetValue(gateway, out GatewayLease? lease))
+            {
+                continue;
+            }
 
             // One-way calls can arrive out of order. The number lets the gateway put a room's batches back in order.
             _batchNumbers[gateway] = batch.Number = _batchNumbers.GetValueOrDefault(gateway) + 1;
@@ -708,20 +843,38 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     /// <summary>Brings the non-durable parts (presence, timers) back in line with the record.</summary>
     private void ReconcileRuntime(TimeSpan retryDelay)
     {
-        var record = Record;
-        foreach (var player in _runtime.Keys.Where(p => !record.Exists || !record.Members.ContainsKey(p)).ToList())
+        RoomRecord<TState> record = Record;
+        foreach (string? player in _runtime.Keys.Where(p => !record.Exists || !record.Members.ContainsKey(p)).ToList())
         {
-            if (!_runtime.Remove(player, out var runtime)) continue;
+            if (!_runtime.Remove(player, out MemberRuntime? runtime))
+            {
+                continue;
+            }
+
             runtime.GraceTimer?.Dispose();
-            foreach (var clientId in runtime.Connections.Keys) _connectionOwner.Remove(clientId);
+            foreach (string clientId in runtime.Connections.Keys)
+            {
+                _connectionOwner.Remove(clientId);
+            }
         }
 
-        foreach (var name in _deadlineTimers.Keys.ToList()) DisarmDeadline(name);
-        if (!record.Exists) return;
-
-        foreach (var player in record.Members.Keys)
+        foreach (string? name in _deadlineTimers.Keys.ToList())
         {
-            if (!_runtime.TryGetValue(player, out var runtime)) _runtime[player] = runtime = new MemberRuntime { Status = PresenceStatus.Reconnecting };
+            DisarmDeadline(name);
+        }
+
+        if (!record.Exists)
+        {
+            return;
+        }
+
+        foreach (string player in record.Members.Keys)
+        {
+            if (!_runtime.TryGetValue(player, out MemberRuntime? runtime))
+            {
+                _runtime[player] = runtime = new MemberRuntime { Status = PresenceStatus.Reconnecting };
+            }
+
             if (runtime.Connections.Count == 0 && runtime.GraceTimer is null)
             {
                 runtime.Status = PresenceStatus.Reconnecting;
@@ -729,8 +882,11 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
             }
         }
 
-        var earliest = Now + retryDelay;
-        foreach (var (name, due) in record.Deadlines) ArmDeadline(name, due < earliest ? earliest : due);
+        DateTimeOffset earliest = Now + retryDelay;
+        foreach ((string? name, DateTimeOffset due) in record.Deadlines)
+        {
+            ArmDeadline(name, due < earliest ? earliest : due);
+        }
     }
 
     private Task OnRoomActivating(CancellationToken cancellationToken)
@@ -743,17 +899,29 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     private void Teardown()
     {
-        foreach (var runtime in _runtime.Values) runtime.GraceTimer?.Dispose();
+        foreach (MemberRuntime runtime in _runtime.Values)
+        {
+            runtime.GraceTimer?.Dispose();
+        }
+
         _runtime.Clear();
         _connectionOwner.Clear();
-        foreach (var name in _deadlineTimers.Keys.ToList()) DisarmDeadline(name);
-        if (_storage is null) _memory = new RoomRecord<TState>();
+        foreach (string? name in _deadlineTimers.Keys.ToList())
+        {
+            DisarmDeadline(name);
+        }
+
+        if (_storage is null)
+        {
+            _memory = new RoomRecord<TState>();
+        }
+
         DeactivateOnIdle();
     }
 
     private void UndoCreate()
     {
-        var record = Record;
+        RoomRecord<TState> record = Record;
         record.Exists = false;
         record.Incarnation = null;
         record.State = new TState();
@@ -764,7 +932,11 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     private void TouchGateway(GatewayRef gateway)
     {
-        if (!_gateways.TryGetValue(gateway.Id.Value, out var lease)) _gateways[gateway.Id.Value] = lease = new GatewayLease();
+        if (!_gateways.TryGetValue(gateway.Id.Value, out GatewayLease? lease))
+        {
+            _gateways[gateway.Id.Value] = lease = new GatewayLease();
+        }
+
         lease.Observer = gateway.Observer;
         lease.LastRenewal = Now;
     }
@@ -772,32 +944,57 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     /// <summary>Attaches a connection to a member. Returns true when it was not attached before.</summary>
     private bool Attach(ConnectionId connection, string player, string gateway)
     {
-        var runtime = _runtime[player];
-        if (runtime.Connections.TryGetValue(connection.ClientId, out var existing))
+        MemberRuntime runtime = _runtime[player];
+        if (runtime.Connections.TryGetValue(connection.ClientId, out AttachedConnection existing))
         {
-            if (existing.Generation > connection.Generation) return false;
-            if (existing.Generation == connection.Generation && existing.Gateway == gateway) return false;
+            if (existing.Generation > connection.Generation)
+            {
+                return false;
+            }
+
+            if (existing.Generation == connection.Generation && existing.Gateway == gateway)
+            {
+                return false;
+            }
         }
-        else if (_connectionOwner.TryGetValue(connection.ClientId, out var previousOwner) && previousOwner != player && _runtime.TryGetValue(previousOwner, out var previous))
+        else if (_connectionOwner.TryGetValue(connection.ClientId, out string? previousOwner) && previousOwner != player && _runtime.TryGetValue(previousOwner, out MemberRuntime? previous))
         {
             previous.Connections.Remove(connection.ClientId);
-            if (previous.Connections.Count == 0) SetPresence(previousOwner, previous, PresenceStatus.Reconnecting);
+            if (previous.Connections.Count == 0)
+            {
+                SetPresence(previousOwner, previous, PresenceStatus.Reconnecting);
+            }
         }
 
         runtime.Connections[connection.ClientId] = new AttachedConnection(connection.Generation, gateway);
         _connectionOwner[connection.ClientId] = player;
-        if (runtime.Status != PresenceStatus.Online) SetPresence(player, runtime, PresenceStatus.Online);
+        if (runtime.Status != PresenceStatus.Online)
+        {
+            SetPresence(player, runtime, PresenceStatus.Online);
+        }
+
         return true;
     }
 
     /// <summary>Detaches a connection, but only the exact generation named: a late disconnect never removes a newer connection.</summary>
     private void DetachConnection(ConnectionId connection)
     {
-        if (!_connectionOwner.TryGetValue(connection.ClientId, out var player) || !_runtime.TryGetValue(player, out var runtime)) return;
-        if (!runtime.Connections.TryGetValue(connection.ClientId, out var attached) || attached.Generation != connection.Generation) return;
+        if (!_connectionOwner.TryGetValue(connection.ClientId, out string? player) || !_runtime.TryGetValue(player, out MemberRuntime? runtime))
+        {
+            return;
+        }
+
+        if (!runtime.Connections.TryGetValue(connection.ClientId, out AttachedConnection attached) || attached.Generation != connection.Generation)
+        {
+            return;
+        }
+
         runtime.Connections.Remove(connection.ClientId);
         _connectionOwner.Remove(connection.ClientId);
-        if (runtime.Connections.Count == 0) SetPresence(player, runtime, PresenceStatus.Reconnecting);
+        if (runtime.Connections.Count == 0)
+        {
+            SetPresence(player, runtime, PresenceStatus.Reconnecting);
+        }
     }
 
     private void SetPresence(string player, MemberRuntime runtime, PresenceStatus status)
@@ -805,9 +1002,13 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
         runtime.Status = status;
         runtime.GraceTimer?.Dispose();
         runtime.GraceTimer = null;
-        if (status == PresenceStatus.Reconnecting) StartGrace(player, runtime);
-        var op = _op!;
-        op.Current.Events.Add(PresenceEvent(player, status, Record.Members.TryGetValue(player, out var member) ? member.Role : null));
+        if (status == PresenceStatus.Reconnecting)
+        {
+            StartGrace(player, runtime);
+        }
+
+        Operation op = _op!;
+        op.Current.Events.Add(PresenceEvent(player, status, Record.Members.TryGetValue(player, out MemberRecord? member) ? member.Role : null));
         op.PresenceChanges.Add((player, status));
     }
 
@@ -818,16 +1019,23 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     private async Task GraceExpired(string player)
     {
-        if (!_runtime.TryGetValue(player, out var runtime) || runtime.Status != PresenceStatus.Reconnecting) return;
+        if (!_runtime.TryGetValue(player, out MemberRuntime? runtime) || runtime.Status != PresenceStatus.Reconnecting)
+        {
+            return;
+        }
+
         runtime.GraceTimer?.Dispose();
         runtime.GraceTimer = null;
-        var op = Begin();
+        Operation op = Begin();
         try
         {
             if (_info.OverridesOnPlayerLeft)
             {
-                var failure = await Guarded(() => OnPlayerLeft(new PlayerId(player), LeaveReason.GraceExpired));
-                if (failure is not null) _log.LogError(failure, "OnPlayerLeft failed in room {Room}.", RoomId);
+                Exception? failure = await Guarded(() => OnPlayerLeft(new PlayerId(player), LeaveReason.GraceExpired));
+                if (failure is not null)
+                {
+                    _log.LogError(failure, "OnPlayerLeft failed in room {Room}.", RoomId);
+                }
             }
 
             op.Current.Removals.Add(new Removal(player, null, null));
@@ -842,26 +1050,48 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     private async Task CheckLeases()
     {
-        if (_gateways.Count == 0) return;
-        var cutoff = Now - _options.LeaseTimeout;
-        var dead = _gateways.Where(g => g.Value.LastRenewal < cutoff).Select(g => g.Key).ToList();
-        if (dead.Count == 0) return;
-        foreach (var gateway in dead) _gateways.Remove(gateway);
-        if (!Record.Exists) return;
+        if (_gateways.Count == 0)
+        {
+            return;
+        }
 
-        var op = Begin();
+        DateTimeOffset cutoff = Now - _options.LeaseTimeout;
+        List<string> dead = [.. _gateways.Where(g => g.Value.LastRenewal < cutoff).Select(g => g.Key)];
+        if (dead.Count == 0)
+        {
+            return;
+        }
+
+        foreach (string? gateway in dead)
+        {
+            _gateways.Remove(gateway);
+        }
+
+        if (!Record.Exists)
+        {
+            return;
+        }
+
+        Operation op = Begin();
         try
         {
-            var lost = new List<ConnectionId>();
-            foreach (var runtime in _runtime.Values)
+            List<ConnectionId> lost = [];
+            foreach (MemberRuntime runtime in _runtime.Values)
             {
-                foreach (var (clientId, connection) in runtime.Connections)
+                foreach ((string? clientId, AttachedConnection connection) in runtime.Connections)
                 {
-                    if (dead.Contains(connection.Gateway)) lost.Add(new ConnectionId(clientId, connection.Generation));
+                    if (dead.Contains(connection.Gateway))
+                    {
+                        lost.Add(new ConnectionId(clientId, connection.Generation));
+                    }
                 }
             }
 
-            foreach (var connection in lost) DetachConnection(connection);
+            foreach (ConnectionId connection in lost)
+            {
+                DetachConnection(connection);
+            }
+
             await CommitAsync(op);
         }
         finally
@@ -875,36 +1105,55 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     private void ArmDeadline(string name, DateTimeOffset due)
     {
         DisarmDeadline(name);
-        var delay = due - Now;
-        if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
-        if (delay > MaxTimerDelay) delay = MaxTimerDelay;
+        TimeSpan delay = due - Now;
+        if (delay < TimeSpan.Zero)
+        {
+            delay = TimeSpan.Zero;
+        }
+
+        if (delay > s_maxTimerDelay)
+        {
+            delay = s_maxTimerDelay;
+        }
+
         _deadlineTimers[name] = this.RegisterGrainTimer(() => DeadlineFired(name), new GrainTimerCreationOptions { DueTime = delay, Period = Timeout.InfiniteTimeSpan, KeepAlive = true });
     }
 
-    private static readonly TimeSpan MaxTimerDelay = TimeSpan.FromDays(30);
+    private static readonly TimeSpan s_maxTimerDelay = TimeSpan.FromDays(30);
 
     private void DisarmDeadline(string name)
     {
-        if (_deadlineTimers.Remove(name, out var timer)) timer.Dispose();
+        if (_deadlineTimers.Remove(name, out IGrainTimer? timer))
+        {
+            timer.Dispose();
+        }
     }
 
     private async Task DeadlineFired(string name)
     {
         DisarmDeadline(name);
-        if (!Record.Exists || !Record.Deadlines.TryGetValue(name, out var due)) return;
+        if (!Record.Exists || !Record.Deadlines.TryGetValue(name, out DateTimeOffset due))
+        {
+            return;
+        }
+
         if (due > Now + TimeSpan.FromMilliseconds(50))
         {
             ArmDeadline(name, due);
             return;
         }
 
-        var op = Begin();
+        Operation op = Begin();
         try
         {
             op.Current.DeadlineChanges.Add((name, null));
             op.NeedsSave = true;
-            var failure = await Guarded(() => OnDeadline(name));
-            if (failure is not null) _log.LogError(failure, "OnDeadline('{Deadline}') failed in room {Room}.", name, RoomId);
+            Exception? failure = await Guarded(() => OnDeadline(name));
+            if (failure is not null)
+            {
+                _log.LogError(failure, "OnDeadline('{Deadline}') failed in room {Room}.", name, RoomId);
+            }
+
             await CommitAsync(op);
         }
         finally
@@ -917,9 +1166,9 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     private bool TryGetRecorded(string player, string commandId, [NotNullWhen(true)] out RoomReply? reply)
     {
-        if (Record.Dedup.TryGetValue(player, out var entries))
+        if (Record.Dedup.TryGetValue(player, out List<DedupEntry>? entries))
         {
-            for (var i = entries.Count - 1; i >= 0; i--)
+            for (int i = entries.Count - 1; i >= 0; i--)
             {
                 if (entries[i].CommandId == commandId)
                 {
@@ -935,17 +1184,32 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     private void Remember(string player, string commandId, RoomReply reply)
     {
-        if (!Record.Dedup.TryGetValue(player, out var entries)) Record.Dedup[player] = entries = new List<DedupEntry>();
+        if (!Record.Dedup.TryGetValue(player, out List<DedupEntry>? entries))
+        {
+            Record.Dedup[player] = entries = [];
+        }
+
         entries.Add(new DedupEntry { CommandId = commandId, At = Now, Reply = reply.WithoutSnapshot() });
 
         // Keep the newest DedupCapacity entries, and anything younger than DedupWindow, whichever is more.
-        var excess = entries.Count - _options.DedupCapacity;
-        if (excess <= 0) return;
-        var cutoff = Now - _options.DedupWindow;
-        var hardExcess = entries.Count - (_options.DedupCapacity * 16);
-        var remove = 0;
-        while (remove < excess && (entries[remove].At < cutoff || remove < hardExcess)) remove++;
-        if (remove > 0) entries.RemoveRange(0, remove);
+        int excess = entries.Count - _options.DedupCapacity;
+        if (excess <= 0)
+        {
+            return;
+        }
+
+        DateTimeOffset cutoff = Now - _options.DedupWindow;
+        int hardExcess = entries.Count - (_options.DedupCapacity * 16);
+        int remove = 0;
+        while (remove < excess && (entries[remove].At < cutoff || remove < hardExcess))
+        {
+            remove++;
+        }
+
+        if (remove > 0)
+        {
+            entries.RemoveRange(0, remove);
+        }
     }
 
     // ---------------------------------------------------------------- helpers
@@ -953,23 +1217,26 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     private RoomPayload Payload(byte[]? bytes) => new(bytes, _serializer);
 
     private RoomMember ToRoomMember(MemberRecord member) =>
-        new(new PlayerId(member.Player), member.Role, _runtime.TryGetValue(member.Player, out var runtime) ? runtime.Status : PresenceStatus.Reconnecting);
+        new(new PlayerId(member.Player), member.Role, _runtime.TryGetValue(member.Player, out MemberRuntime? runtime) ? runtime.Status : PresenceStatus.Reconnecting);
 
     private SnapshotData BuildSnapshot(string player)
     {
-        var record = Record;
-        var members = new List<MemberInfo>(record.Members.Count);
+        RoomRecord<TState> record = Record;
+        List<MemberInfo> members = [with(record.Members.Count)];
         MemberInfo? you = null;
-        foreach (var member in record.Members.Values)
+        foreach (MemberRecord member in record.Members.Values)
         {
-            var info = new MemberInfo
+            MemberInfo info = new()
             {
                 Player = member.Player,
                 Role = member.Role,
-                Status = _runtime.TryGetValue(member.Player, out var runtime) ? runtime.Status : PresenceStatus.Reconnecting,
+                Status = _runtime.TryGetValue(member.Player, out MemberRuntime? runtime) ? runtime.Status : PresenceStatus.Reconnecting,
             };
             members.Add(info);
-            if (member.Player == player) you = info;
+            if (member.Player == player)
+            {
+                you = info;
+            }
         }
 
         return new SnapshotData
@@ -985,7 +1252,11 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     private RoomReply FailureReply(Exception failure, string rejectionCode, string what)
     {
-        if (failure is RoomRejectedException rejected) return RoomReply.Rejected(rejected.Code ?? rejectionCode, rejected.Message);
+        if (failure is RoomRejectedException rejected)
+        {
+            return RoomReply.Rejected(rejected.Code ?? rejectionCode, rejected.Message);
+        }
+
         _log.LogError(failure, "{What} failed in room {RoomType}/{Room}.", what, RoomType, RoomId);
         return RoomReply.Error(Wire.Codes.HandlerError, "The room could not process this request.");
     }
@@ -1014,7 +1285,11 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     private static string EventName(string name)
     {
-        if (string.IsNullOrEmpty(name) || name[0] == '$') throw new ArgumentException("Event names must not be empty or start with '$'.", nameof(name));
+        if (string.IsNullOrEmpty(name) || name[0] == '$')
+        {
+            throw new ArgumentException("Event names must not be empty or start with '$'.", nameof(name));
+        }
+
         return name;
     }
 
@@ -1023,7 +1298,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     private sealed class Operation
     {
         public Scope Current = new();
-        public readonly List<(string Player, PresenceStatus Status)> PresenceChanges = new();
+        public readonly List<(string Player, PresenceStatus Status)> PresenceChanges = [];
         public bool NeedsSave;
         public bool Poisoned;
     }
@@ -1031,10 +1306,10 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
     /// <summary>What app code asked for during one guarded call; merged into the operation only if the call succeeds.</summary>
     private sealed class Scope
     {
-        public readonly List<OutEvent> Events = new();
-        public readonly List<(string Player, string? Role)> RoleChanges = new();
-        public readonly List<Removal> Removals = new();
-        public readonly List<(string Name, DateTimeOffset? Due)> DeadlineChanges = new();
+        public readonly List<OutEvent> Events = [];
+        public readonly List<(string Player, string? Role)> RoleChanges = [];
+        public readonly List<Removal> Removals = [];
+        public readonly List<(string Name, DateTimeOffset? Due)> DeadlineChanges = [];
         public bool Close;
         public string? CloseMessage;
 
@@ -1069,7 +1344,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
         public long Seq;
         public PresenceStatus Status;
         public IGrainTimer? GraceTimer;
-        public readonly Dictionary<string, AttachedConnection> Connections = new(StringComparer.Ordinal);
+        public readonly Dictionary<string, AttachedConnection> Connections = [with(StringComparer.Ordinal)];
     }
 
     private readonly record struct AttachedConnection(long Generation, string Gateway);

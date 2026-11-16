@@ -1,4 +1,4 @@
-using GrainWire.Protocol;
+﻿using GrainWire.Protocol;
 using GrainWire.Server.Internal;
 
 namespace GrainWire.Tests;
@@ -9,10 +9,14 @@ public class BatchSequencerTests
 
     private static (BatchSequencer Sequencer, List<string> Published) Create(int gapTimeoutMs = 150)
     {
-        var published = new List<string>();
-        var sequencer = new BatchSequencer(batch =>
+        List<string> published = [];
+        BatchSequencer sequencer = new(batch =>
         {
-            lock (published) published.Add($"{batch.Epoch}:{batch.Number}");
+            lock (published)
+            {
+                published.Add($"{batch.Epoch}:{batch.Number}");
+            }
+
             return Task.CompletedTask;
         }, TimeSpan.FromMilliseconds(gapTimeoutMs));
         return (sequencer, published);
@@ -20,32 +24,42 @@ public class BatchSequencerTests
 
     private static async Task<List<string>> Settle(List<string> published, int count, int timeoutMs = 2000)
     {
-        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         while (DateTime.UtcNow < deadline)
         {
             lock (published)
             {
-                if (published.Count >= count) return published.ToList();
+                if (published.Count >= count)
+                {
+                    return [.. published];
+                }
             }
 
             await Task.Delay(10);
         }
 
-        lock (published) return published.ToList();
+        lock (published)
+        {
+            return [.. published];
+        }
     }
 
     [Fact]
     public async Task Batches_that_arrive_out_of_order_are_published_in_order()
     {
-        var (sequencer, published) = Create();
-        foreach (var number in new long[] { 2, 1, 4, 5, 3 }) sequencer.Accept(Batch(number));
+        (BatchSequencer? sequencer, List<string>? published) = Create();
+        foreach (long number in new long[] { 2, 1, 4, 5, 3 })
+        {
+            sequencer.Accept(Batch(number));
+        }
+
         Assert.Equal(["e1:1", "e1:2", "e1:3", "e1:4", "e1:5"], await Settle(published, 5));
     }
 
     [Fact]
     public async Task A_batch_that_never_arrives_is_skipped_after_a_short_wait_and_duplicates_are_dropped()
     {
-        var (sequencer, published) = Create();
+        (BatchSequencer? sequencer, List<string>? published) = Create();
         sequencer.Accept(Batch(1));
         sequencer.Accept(Batch(3));
         Assert.Equal(["e1:1"], await Settle(published, 2, timeoutMs: 60));
@@ -60,7 +74,7 @@ public class BatchSequencerTests
     [Fact]
     public async Task A_new_epoch_starts_from_one_and_late_batches_of_the_old_epoch_are_dropped()
     {
-        var (sequencer, published) = Create();
+        (BatchSequencer? sequencer, List<string>? published) = Create();
         sequencer.Accept(Batch(1));
         sequencer.Accept(Batch(2));
         sequencer.Accept(Batch(1, epoch: "e2"));
@@ -74,7 +88,7 @@ public class BatchSequencerTests
     [Fact]
     public async Task Rooms_are_sequenced_independently()
     {
-        var (sequencer, published) = Create();
+        (BatchSequencer? sequencer, List<string>? published) = Create();
         sequencer.Accept(Batch(2, room: "counter/a"));
         sequencer.Accept(Batch(1, room: "counter/b"));
         Assert.Equal(["e1:1"], await Settle(published, 1, timeoutMs: 60));
