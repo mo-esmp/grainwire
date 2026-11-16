@@ -38,6 +38,9 @@ internal sealed class GatewayConnection(
 
     public volatile bool Closed;
 
+    /// <summary>True while this connection holds one of its player's connection slots.</summary>
+    public volatile bool Admitted;
+
     /// <summary>Set to 1 once the gateway has decided to disconnect this connection for falling behind.</summary>
     public int Evicting;
 

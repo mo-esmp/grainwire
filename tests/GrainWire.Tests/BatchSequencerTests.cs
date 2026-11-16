@@ -5,7 +5,9 @@ namespace GrainWire.Tests;
 
 public class BatchSequencerTests
 {
-    private static DeliveryBatch Batch(long number, string epoch = "e1", string room = "counter/r1") => new() { Room = room, Epoch = epoch, Number = number };
+    /// <summary>Epoch "e1" has order 1, "e2" has order 2, and so on.</summary>
+    private static DeliveryBatch Batch(long number, string epoch = "e1", string room = "counter/r1", long? order = null) =>
+        new() { Room = room, Epoch = epoch, Number = number, EpochOrder = order ?? long.Parse(epoch[1..]) };
 
     private static (BatchSequencer Sequencer, List<string> Published) Create(int gapTimeoutMs = 150)
     {
@@ -83,6 +85,37 @@ public class BatchSequencerTests
         Assert.Equal(["e1:1", "e1:2", "e2:1", "e2:2"], await Settle(published, 4));
         await Task.Delay(250);
         Assert.Equal(4, published.Count);
+    }
+
+    // An old activation's batch can arrive after the new epoch has started, at a gateway that never saw the old epoch.
+    [Fact]
+    public async Task A_late_batch_of_an_older_epoch_is_dropped_even_if_that_epoch_was_never_seen()
+    {
+        (BatchSequencer? sequencer, List<string>? published) = Create();
+        sequencer.Accept(Batch(1, epoch: "e2"));
+        sequencer.Accept(Batch(1, epoch: "e1"));    // older, and new to this gateway
+        sequencer.Accept(Batch(2, epoch: "e2"));    // the current epoch keeps flowing
+        Assert.Equal(["e2:1", "e2:2"], await Settle(published, 2));
+        await Task.Delay(250);
+        Assert.Equal(2, published.Count);
+        Assert.Equal(new KnownEpoch("e2", 2), sequencer.Known("counter/r1"));
+    }
+
+    [Fact]
+    public async Task An_epoch_can_raise_its_own_order_and_is_then_ranked_by_it()
+    {
+        (BatchSequencer? sequencer, List<string>? published) = Create();
+        Assert.Equal(default, sequencer.Known("counter/r1"));
+        sequencer.Accept(Batch(1, epoch: "e1", order: 1));
+        sequencer.Accept(Batch(2, epoch: "e1", order: 7));
+        Assert.Equal(new KnownEpoch("e1", 7), sequencer.Known("counter/r1"));
+
+        sequencer.Accept(Batch(1, epoch: "e5"));    // order 5: older than the raised order
+        sequencer.Accept(Batch(1, epoch: "e7"));    // a tie is not newer either
+        sequencer.Accept(Batch(1, epoch: "e8"));
+        Assert.Equal(["e1:1", "e1:2", "e8:1"], await Settle(published, 3));
+        await Task.Delay(250);
+        Assert.Equal(3, published.Count);
     }
 
     [Fact]

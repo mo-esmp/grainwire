@@ -29,6 +29,13 @@ public sealed class GatewayRef
     [Id(1)] public IGatewayObserver Observer { get; set; } = null!;
 }
 
+/// <summary>
+/// The newest stream epoch of a room that a gateway has received batches from, with that epoch's order.
+/// A gateway sends it whenever it attaches connections, so the room can rank its own epoch above it.
+/// </summary>
+[GenerateSerializer, Immutable]
+public readonly record struct KnownEpoch([property: Id(0)] string? Epoch, [property: Id(1)] long Order);
+
 [GenerateSerializer]
 public sealed class JoinRequest
 {
@@ -39,6 +46,7 @@ public sealed class JoinRequest
     [Id(4)] public bool Create { get; set; }
     [Id(5)] public byte[]? Options { get; set; }
     [Id(6)] public byte[]? Data { get; set; }
+    [Id(7)] public KnownEpoch Known { get; set; }
 }
 
 [GenerateSerializer]
@@ -62,6 +70,7 @@ public sealed class SyncRequest
     [Id(3)] public string? Incarnation { get; set; }
     [Id(4)] public string? Epoch { get; set; }
     [Id(5)] public long Seq { get; set; }
+    [Id(6)] public KnownEpoch Known { get; set; }
 }
 
 [GenerateSerializer]
@@ -84,6 +93,7 @@ public sealed class RenewRequest
 {
     [Id(0)] public GatewayRef Gateway { get; set; } = null!;
     [Id(1)] public List<RenewEntry> Connections { get; set; } = [];
+    [Id(2)] public KnownEpoch Known { get; set; }
 }
 
 [GenerateSerializer]
@@ -170,6 +180,12 @@ public sealed class DeliveryBatch
 
     /// <summary>Counts up per room and gateway within an epoch, starting at 1, so a gateway can restore the order of batches.</summary>
     [Id(4)] public long Number { get; set; }
+
+    /// <summary>
+    /// Ranks the epochs of a room: a later epoch has a higher order. Epoch ids are random, so this is what lets a
+    /// gateway tell a late batch of an older epoch from the first batch of a newer one.
+    /// </summary>
+    [Id(5)] public long EpochOrder { get; set; }
 }
 
 [GenerateSerializer]

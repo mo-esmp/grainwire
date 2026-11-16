@@ -20,6 +20,9 @@ Section numbers refer to the design.
 | 7 | "JSON by default, via `IRoomSerializer`" (§7.5). | The envelope is always JSON in v1. `IRoomSerializer` covers app payloads and must produce JSON. | A pluggable binary envelope is a bigger feature than v1 needs. Framework payloads (`$presence`, `$closed`) use a fixed format so a custom serializer cannot break clients. |
 | 8 | A reply follows its command's events implicitly. | A reply and the events of the same command may arrive in either order, and a `$closed` notice can overtake the reply to the command that closed the room. The client handles both. | Replies travel back on the call; events travel through the observer. |
 
+| 9 | Epochs are opaque; nothing ranks them (§7.6). | Every batch a room sends to a gateway carries an **epoch order**. A gateway replaces the epoch it follows only with a higher-ranked one, and tells the room the newest epoch it has seen whenever it attaches connections; the room then ranks itself above that. Clients still treat `se` as opaque. | A late batch from an old activation could reach a gateway that had never seen that epoch, and was taken for a new epoch. The order starts from the silo's clock; the exchange with the gateway corrects it when clocks differ between silos. |
+| 10 | Limits are checked when a request arrives (§7.15). | Connections per player are counted when a connection is established, and one that goes over the limit is disconnected at once. Room creations take a slot before the room is asked and give it back if nothing was created. | Requests that arrive at the same moment could all pass a check that only read the count. |
+
 ## Differences in structure
 
 - **`AddGrainWire()` for silos lives in `GrainWire.Abstractions`**, not `GrainWire.Server`

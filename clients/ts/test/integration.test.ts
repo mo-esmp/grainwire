@@ -136,6 +136,22 @@ describe("GrainWire client against a real server", () => {
     expect(await bob.join("counter", id)).toBe(bobRoom);
   });
 
+  it("resolves join() only once the room has its first snapshot, even when that snapshot is lost", async () => {
+    const id = newId();
+    const alice = await open("alice");
+    await control(`drop?clientId=${alice.clientId}&type=$snapshot&count=1`);
+
+    // Two callers at once share the join and get the same, ready room.
+    const [room, same] = await Promise.all([
+      alice.join<CounterView>("counter", id, { create: true, options: { start: 4 } }),
+      alice.join<CounterView>("counter", id, { create: true, options: { start: 4 } }),
+    ]);
+    expect(same).toBe(room);
+    expect(room.view).toMatchObject({ value: 4, viewer: "alice" });
+    expect(room.you).toMatchObject({ player: "alice", role: "owner" });
+    expect(await room.request<number>("add", { amount: 1 })).toBe(5);
+  });
+
   it("reports refusals and failures as different errors", async () => {
     const alice = await open("alice");
     await expect(alice.join("counter", newId())).rejects.toMatchObject({ name: "RoomError", code: "room-not-found" });

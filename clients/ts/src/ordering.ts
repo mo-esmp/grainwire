@@ -109,10 +109,14 @@ export class OrderingEngine {
     return [];
   }
 
-  /** The server answered a sync with "in-sync": nothing is missing. */
+  /** The server answered a sync with "in-sync": this stream is the current one and nothing up to `seq` is missing. */
   confirmInSync(now: number): void {
     this.lastActivityAt = now;
-    this.buffer = this.buffer.filter((e) => e.ri !== this.ri || e.se !== this.se);
+
+    // Anything held from another epoch or incarnation is stale, because the server just confirmed which stream is
+    // current. Keeping it would make the client ask for a sync again and again. Later events of this stream were sent
+    // after the server answered, so they stay: the ones before them arrive, or the next sync brings a snapshot.
+    this.buffer = this.buffer.filter((e) => e.ri === this.ri && e.se === this.se && e.seq > this.position);
     this.updateWaiting(now);
   }
 

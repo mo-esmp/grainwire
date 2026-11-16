@@ -103,11 +103,24 @@ describe("OrderingEngine", () => {
     expect(seqs(engine.receiveSnapshot(snapshot(2), 4))).toEqual(["S2"]);
   });
 
-  it("forgets held events when the server says the client is in sync", () => {
+  it("forgets held events of an older stream when the server says the client is in sync", () => {
+    const engine = new OrderingEngine(options, 0);
+    engine.receiveSnapshot(snapshot(3, "e2"), 0);
+    engine.receiveEvent(event(9, "e1"), 10); // a late event of the epoch before
+    expect(seqs(engine.tick(300))).toEqual(["sync"]);
+    engine.confirmInSync(320);
+
+    // The stale event is gone, so the client does not keep asking.
+    expect(engine.tick(5_000)).toEqual([]);
+    expect(engine.tick(10_000)).toEqual([]);
+  });
+
+  it("keeps later events of the current stream when the server says the client is in sync", () => {
     const engine = new OrderingEngine(options, 0);
     engine.receiveSnapshot(snapshot(3), 0);
-    engine.receiveEvent(event(9), 10); // cannot be right if the server's position is 3
+    engine.receiveEvent(event(5), 10); // sent after the server answered the sync
     engine.confirmInSync(20);
+    expect(seqs(engine.receiveEvent(event(4), 30))).toEqual([4, 5]);
     expect(engine.tick(5_000)).toEqual([]);
   });
 });

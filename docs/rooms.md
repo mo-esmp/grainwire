@@ -112,6 +112,10 @@ protected override Task OnDeadline(string name)
 A deadline is part of the room. In a persistent room it survives a restart; one that came due
 while the room was not running fires as soon as the room runs again.
 
+A deadline is removed only when `OnDeadline` succeeds and the result is saved. If the hook throws,
+nothing it did is kept, the deadline stays, and it is tried again: after one second, then after
+longer and longer waits up to a minute. Make `OnDeadline` safe to run again.
+
 ## Calling the room from elsewhere
 
 To change the room from your own grain methods (another grain calls in, say), wrap the work in

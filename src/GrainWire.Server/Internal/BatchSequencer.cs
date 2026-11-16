@@ -7,6 +7,8 @@ namespace GrainWire.Server.Internal;
 /// Puts the batches of each room back in the order the room sent them. Rooms send batches with one-way calls, which
 /// Orleans may deliver out of order; every batch carries a number that counts up per room and gateway within an epoch.
 /// A batch that never arrives is skipped after a short wait (clients then repair themselves with a sync).
+/// Epochs are ranked by <see cref="DeliveryBatch.EpochOrder"/>, never by which one arrived first: a batch of an
+/// older epoch is dropped even if this gateway has not seen that epoch before.
 /// </summary>
 internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan gapTimeout)
 {
@@ -21,24 +23,22 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
             state.LastActivity = Environment.TickCount64;
             if (batch.Epoch != state.Epoch)
             {
-                // A batch from an epoch that already ended is stale; anything else starts a new epoch.
-                if (state.PastEpochs.Contains(batch.Epoch))
+                // Only a higher-ranked epoch replaces the current one. A late batch of an older epoch is stale, whether
+                // or not that epoch was seen here before; publishing it would put old events after the recovered stream.
+                if (state.Epoch is not null && batch.EpochOrder <= state.EpochOrder)
                 {
                     return;
                 }
 
-                if (state.Epoch is not null)
-                {
-                    state.PastEpochs.Enqueue(state.Epoch);
-                    if (state.PastEpochs.Count > 8)
-                    {
-                        state.PastEpochs.Dequeue();
-                    }
-                }
-
                 state.Epoch = batch.Epoch;
+                state.EpochOrder = batch.EpochOrder;
                 state.Next = 1;
                 state.Pending.Clear();
+            }
+            else if (batch.EpochOrder > state.EpochOrder)
+            {
+                // The room raised its own rank (see RoomGrain.TouchGateway).
+                state.EpochOrder = batch.EpochOrder;
             }
 
             if (batch.Number < state.Next)
@@ -58,6 +58,20 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
                 state.Waiting = true;
                 _ = SkipGapLaterAsync(state, state.Next);
             }
+        }
+    }
+
+    /// <summary>The newest epoch seen for a room, sent to the room whenever this gateway attaches connections to it.</summary>
+    public KnownEpoch Known(string room)
+    {
+        if (!_rooms.TryGetValue(room, out RoomState? state))
+        {
+            return default;
+        }
+
+        lock (state)
+        {
+            return new KnownEpoch(state.Epoch, state.EpochOrder);
         }
     }
 
@@ -115,11 +129,11 @@ internal sealed class BatchSequencer(Func<DeliveryBatch, Task> publish, TimeSpan
     private sealed class RoomState
     {
         public string? Epoch;
+        public long EpochOrder;
         public long Next = 1;
         public bool Waiting;
         public long LastActivity;
         public Task Tail = Task.CompletedTask;
         public readonly SortedDictionary<long, DeliveryBatch> Pending = [];
-        public readonly Queue<string> PastEpochs = new();
     }
 }

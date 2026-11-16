@@ -26,6 +26,9 @@ public abstract class CounterRoomBase : RoomGrain<CounterState>
     /// <summary>Room ids for which OnRejoin refuses the player named "banned".</summary>
     public static readonly ConcurrentDictionary<string, bool> Banned = new();
 
+    /// <summary>Room ids whose OnDeadline throws, with how many more times it does.</summary>
+    public static readonly ConcurrentDictionary<string, int> DeadlineFailures = new();
+
     protected override Task<CreateResult> OnCreate(CreateContext context)
     {
         CreateOptions? options = context.Options.As<CreateOptions>();
@@ -62,6 +65,12 @@ public abstract class CounterRoomBase : RoomGrain<CounterState>
     {
         State.Value += 100;
         Broadcast("bumped", new { value = State.Value, name });
+        if (DeadlineFailures.TryGetValue(RoomId, out int left) && left > 0)
+        {
+            DeadlineFailures[RoomId] = left - 1;
+            throw new InvalidOperationException("Simulated deadline failure.");
+        }
+
         return Task.CompletedTask;
     }
 

@@ -20,6 +20,7 @@ namespace GrainWire.Server.Internal;
 internal sealed partial class Gateway : IGatewayObserver
 {
     private const string ConnectionKey = "grainwire.connection";
+    private const string TooManyConnections = "Too many connections for this player.";
 
     private readonly IGrainFactory _grains;
     private readonly IClusterManifestProvider _manifest;
@@ -107,10 +108,12 @@ internal sealed partial class Gateway : IGatewayObserver
             return;
         }
 
+        // The usual refusal. Connections that are validated at the same moment can all pass this check; the count in
+        // OnClientConnected is what enforces the limit.
         if (_connectionsPerPlayer.TryGetValue(result.Player.Value, out int open) && open >= _options.MaxConnectionsPerPlayer)
         {
             e.ReasonCode = MqttConnectReasonCode.QuotaExceeded;
-            e.ReasonString = "Too many connections for this player.";
+            e.ReasonString = TooManyConnections;
             return;
         }
 
@@ -125,10 +128,41 @@ internal sealed partial class Gateway : IGatewayObserver
             return Task.CompletedTask;
         }
 
+        // Count, then check. The increment is atomic, so of several connections that passed validation together only
+        // as many as the limit allows are admitted. A slot is held only by a connection that really connected, and is
+        // given back when that connection ends, so no slot can leak when a CONNECT is abandoned half-way.
+        int open = _connectionsPerPlayer.AddOrUpdate(connection.Player.Value, 1, static (_, count) => count + 1);
+        if (open > _options.MaxConnectionsPerPlayer)
+        {
+            ReleaseConnectionSlot(connection.Player.Value);
+            connection.Closed = true;
+            _log.LogDebug("Disconnecting {ClientId}: its player has too many connections.", connection.ClientId);
+            _ = Task.Run(() => DisconnectAsync(connection.ClientId, TooManyConnections));
+            return Task.CompletedTask;
+        }
+
+        connection.Admitted = true;
         _connections[connection.ClientId] = connection;
-        _connectionsPerPlayer.AddOrUpdate(connection.Player.Value, 1, static (_, count) => count + 1);
         connection.Worker = Task.Run(() => ProcessQueueAsync(connection));
         return Task.CompletedTask;
+    }
+
+    private void ReleaseConnectionSlot(string player)
+    {
+        _connectionsPerPlayer.AddOrUpdate(player, 0, static (_, count) => Math.Max(0, count - 1));
+        _connectionsPerPlayer.TryRemove(new KeyValuePair<string, int>(player, 0));
+    }
+
+    private async Task DisconnectAsync(string clientId, string reason)
+    {
+        try
+        {
+            await _server!.DisconnectClientAsync(clientId, new MqttServerClientDisconnectOptions { ReasonCode = MqttDisconnectReasonCode.QuotaExceeded, ReasonString = reason });
+        }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "Could not disconnect {ClientId}.", clientId);
+        }
     }
 
     private Task OnClientDisconnected(ClientDisconnectedEventArgs e)
@@ -140,10 +174,12 @@ internal sealed partial class Gateway : IGatewayObserver
 
         connection.Closed = true;
         _connections.TryRemove(new KeyValuePair<string, GatewayConnection>(connection.ClientId, connection));
-        _connectionsPerPlayer.AddOrUpdate(connection.Player.Value, 0, static (_, count) => Math.Max(0, count - 1));
-        if (_connectionsPerPlayer.TryGetValue(connection.Player.Value, out int left) && left == 0)
+
+        // A connection that ended before it was counted (its CONNACK could not be sent) holds no slot.
+        if (connection.Admitted)
         {
-            _connectionsPerPlayer.TryRemove(new KeyValuePair<string, int>(connection.Player.Value, 0));
+            connection.Admitted = false;
+            ReleaseConnectionSlot(connection.Player.Value);
         }
 
         connection.Queue.Writer.TryComplete();
@@ -229,17 +265,7 @@ internal sealed partial class Gateway : IGatewayObserver
         }
 
         _log.LogWarning("Disconnecting {ClientId}: its outgoing queue overflowed.", clientId);
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await _server!.DisconnectClientAsync(clientId, new MqttServerClientDisconnectOptions { ReasonCode = MqttDisconnectReasonCode.QuotaExceeded, ReasonString = "Outgoing queue overflow." });
-            }
-            catch (Exception ex)
-            {
-                _log.LogDebug(ex, "Could not disconnect slow consumer {ClientId}.", clientId);
-            }
-        });
+        _ = Task.Run(() => DisconnectAsync(clientId, "Outgoing queue overflow."));
         return Task.CompletedTask;
     }
 
@@ -323,8 +349,10 @@ internal sealed partial class Gateway : IGatewayObserver
             return RoomReply.Rejected(Wire.Codes.TooManyRooms, "This connection is in too many rooms.");
         }
 
-        // A player who has used up their creation budget can still join rooms that exist.
-        bool mayCreate = message.Create && _creations.HasRoom(connection.Player.Value);
+        // A player who has used up their creation budget can still join rooms that exist. The slot is taken before
+        // the room is asked, so requests that arrive together cannot all pass, and given back below if nothing was created.
+        long creationTicket = 0;
+        bool mayCreate = message.Create && _creations.TryReserve(connection.Player.Value, out creationTicket);
         RoomReply reply = await CallAsync(room, grain => grain.Join(new JoinRequest
         {
             Gateway = Ref,
@@ -334,15 +362,18 @@ internal sealed partial class Gateway : IGatewayObserver
             Create = mayCreate,
             Options = message.Options,
             Data = message.JoinData,
+            Known = _sequencer.Known(roomKey),
         }));
+
+        // Keep the slot when the room was created, and also when the call failed without an answer: the room may
+        // have been created all the same.
+        if (mayCreate && reply.Code is not (Wire.Codes.Created or Wire.Codes.Unavailable))
+        {
+            _creations.Release(connection.Player.Value, creationTicket);
+        }
 
         if (reply.Status == ReplyStatus.Ok)
         {
-            if (reply.Code == Wire.Codes.Created)
-            {
-                _creations.Record(connection.Player.Value);
-            }
-
             connection.Rooms[roomKey] = room;
             _directory.GetOrAdd(roomKey, static _ => new RoomAttachments()).Connections[connection.ClientId] = connection;
             if (connection.Closed)
@@ -384,6 +415,7 @@ internal sealed partial class Gateway : IGatewayObserver
             Incarnation = message.Incarnation,
             Epoch = message.Epoch,
             Seq = message.Seq,
+            Known = _sequencer.Known(roomKey),
         }));
         ForgetRoomIfGone(connection, roomKey, reply);
         return reply;
@@ -586,6 +618,7 @@ internal sealed partial class Gateway : IGatewayObserver
             {
                 Gateway = Ref,
                 Connections = listed.ConvertAll(c => new RenewEntry { Connection = c.Id, Player = c.Player }),
+                Known = _sequencer.Known(roomKey),
             });
         }
         catch (Exception ex)

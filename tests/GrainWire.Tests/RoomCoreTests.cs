@@ -424,6 +424,44 @@ public class RoomCoreTests(ClusterFixture fixture)
         Assert.Contains("Reconnecting:bob", FakeGateway.Read<CounterView>(snapshot.Snapshot!.View).Log);
     }
 
+    // Gateways rank a room's epochs by order. Clocks differ between silos, so a new epoch could start out ranked
+    // below one a gateway has already seen; the gateway would then drop everything the room sends.
+    [Fact]
+    public async Task A_room_ranks_its_epoch_above_any_other_epoch_a_gateway_has_seen()
+    {
+        FakeGateway gateway = NewGateway();
+        long ahead = DateTime.UtcNow.AddYears(5).Ticks;   // as if the previous silo's clock had been far ahead
+        gateway.Known = new KnownEpoch("an-earlier-epoch", ahead);
+
+        RoomAddress room = Rooms.New("counter");
+        await gateway.Join(room, "alice", "a1");
+        await gateway.Join(room, "bob", "b1", create: false);
+        await gateway.Command(room, "alice", "a1", "add", new AddRequest(1));
+        await gateway.WaitFor("b1", e => e.Any(x => x.Type == "changed"));
+        Assert.True(gateway.HighestEpochOrder > ahead);
+    }
+
+    [Fact]
+    public async Task A_room_keeps_its_epoch_order_when_the_gateway_reports_the_same_epoch_or_an_older_one()
+    {
+        FakeGateway gateway = NewGateway();
+        RoomAddress room = Rooms.New("counter");
+        RoomReply created = await gateway.Join(room, "alice", "a1");
+        await gateway.Join(room, "bob", "b1", create: false);
+        await gateway.WaitFor("a1", e => e.Count == 1);
+        long order = gateway.HighestEpochOrder;
+        Assert.InRange(order, DateTime.UtcNow.AddMinutes(-5).Ticks, DateTime.UtcNow.AddMinutes(5).Ticks);
+
+        gateway.Known = new KnownEpoch(created.Snapshot!.Epoch, order);
+        await gateway.Renew(room, ("a1", "alice"), ("b1", "bob"));
+        gateway.Known = new KnownEpoch("an-earlier-epoch", order - 1);
+        await gateway.Renew(room, ("a1", "alice"), ("b1", "bob"));
+
+        await gateway.Command(room, "alice", "a1", "add", new AddRequest(1));
+        await gateway.WaitFor("b1", e => e.Any(x => x.Type == "changed"));
+        Assert.Equal(order, gateway.HighestEpochOrder);
+    }
+
     [Fact]
     public void A_room_grain_that_could_interleave_is_refused()
     {

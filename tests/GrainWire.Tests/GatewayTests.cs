@@ -318,6 +318,73 @@ public class GatewayTests(GatewayClusterFixture cluster)
         Assert.Equal("joined", (await again.Join(existing)).Code());
     }
 
+    // Requests that arrive together must not all pass one check of the limit.
+    [Fact]
+    public async Task Room_creations_that_arrive_together_cannot_exceed_the_limit_per_minute()
+    {
+        string url = cluster.Strict.MqttUrl;   // 3 creations per minute, 2 connections per player, 2 rooms per connection
+        await using TestClient one = await TestClient.ConnectAsync(url, "frank");
+        await using TestClient two = await TestClient.ConnectAsync(url, "frank");
+        JsonElement[] replies = await Task.WhenAll(one.Join(NewRoom()), two.Join(NewRoom()), one.Join(NewRoom()), two.Join(NewRoom()));
+
+        Assert.Equal(3, replies.Count(r => r.Code() == "created"));
+        JsonElement refused = Assert.Single(replies, r => r.Code() != "created");
+        Assert.Equal(("rejected", "rate-limited"), (refused.Status(), refused.Code()));
+    }
+
+    [Fact]
+    public async Task A_burst_of_connections_cannot_exceed_the_limit_per_player()
+    {
+        string url = cluster.Strict.MqttUrl;   // 2 connections per player
+        TestClient?[] clients = await Task.WhenAll(Enumerable.Range(0, 12).Select(async _ =>
+        {
+            try
+            {
+                return await TestClient.ConnectAsync(url, "erin");
+            }
+            catch (Exception)
+            {
+                // Refused at CONNECT, or disconnected again before it could subscribe.
+                return null;
+            }
+        }));
+
+        try
+        {
+            await Task.Delay(500);
+            Assert.Equal(2, clients.Count(c => c is { IsConnected: true }));
+        }
+        finally
+        {
+            foreach (TestClient? client in clients)
+            {
+                if (client is not null)
+                {
+                    await client.DisposeAsync();
+                }
+            }
+        }
+
+        // The count did not drift: once they are gone, the player has exactly two slots again.
+        TestClient? first = null;
+        for (int attempt = 0; first is null; attempt++)
+        {
+            try
+            {
+                first = await TestClient.ConnectAsync(url, "erin");
+            }
+            catch (ConnectRefusedException) when (attempt < 50)
+            {
+                await Task.Delay(100);
+            }
+        }
+
+        await using TestClient firstAgain = first;
+        await using TestClient second = await TestClient.ConnectAsync(url, "erin");
+        ConnectRefusedException tooMany = await Assert.ThrowsAsync<ConnectRefusedException>(() => TestClient.ConnectAsync(url, "erin"));
+        Assert.Equal(MqttClientConnectResultCode.QuotaExceeded, tooMany.Code);
+    }
+
     [Fact]
     public void The_development_authenticator_refuses_to_run_in_production()
     {

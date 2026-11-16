@@ -98,6 +98,7 @@ export class GrainWireClient {
 
   private readonly settings: Settings;
   private readonly rooms = new Map<string, Room<unknown>>();
+  private readonly joining = new Map<string, Promise<Room<unknown>>>();
   private readonly pending = new Map<string, Pending>();
   private readonly listeners = new Set<(state: ConnectionState) => void>();
   private mqtt!: MqttClient;
@@ -144,25 +145,50 @@ export class GrainWireClient {
   }
 
   /**
-   * Joins a room (creating it when `create` is set). Resolves once the first snapshot has been processed.
-   * Joining a room this client is already in returns the same Room.
+   * Joins a room (creating it when `create` is set). Resolves once the first snapshot has been processed, so the
+   * returned Room has its `view`, `members` and `you`. Joining a room this client is already in returns the same Room.
+   *
+   * Rejects with OutcomeUnknownError when the server accepted the join but no snapshot arrived in time. The player may
+   * then be a member of the room; joining again is safe.
    */
   async join<TView = unknown>(type: string, id: string, options: JoinOptions = {}): Promise<Room<TView>> {
     const key = `${type}/${id}`;
+
+    // A second call while the first is still joining waits for the same outcome, so it never gets a half-joined room.
+    const inFlight = this.joining.get(key);
+    if (inFlight) return inFlight as Promise<Room<TView>>;
     const existing = this.rooms.get(key);
     if (existing) return existing as Room<TView>;
     if (this._state !== "connected") throw new NotConnectedError();
 
+    const joining = this.joinNew<TView>(key, type, id, options);
+    this.joining.set(key, joining as Promise<Room<unknown>>);
+    try {
+      return await joining;
+    } finally {
+      this.joining.delete(key);
+    }
+  }
+
+  private async joinNew<TView>(key: string, type: string, id: string, options: JoinOptions): Promise<Room<TView>> {
     const room = new Room<TView>(this, type, id, options.data, this.settings);
     this.rooms.set(key, room as Room<unknown>);
     try {
       const reply = await this.request("join", key, "sys/join", { create: options.create === true, options: options.options, data: options.data });
       interpret(reply);
       room._joined(Date.now());
+
+      // The reply and the snapshot can arrive in either order, and the snapshot can be lost. If it is, the room asks
+      // for one with a sync (see OrderingEngine.expectBaseline); this waits for whichever arrives.
+      await room._whenReady(this.settings.requestTimeoutMs, reply.cmd ?? "");
       return room;
     } catch (error) {
       if (this.rooms.get(key) === (room as Room<unknown>)) this.rooms.delete(key);
+      const joinedOnServer = room._joinedOnce && !room.closed;
       room._close("removed", undefined, false);
+
+      // The server attached this connection but the client gave up: stop the room's events from coming here.
+      if (joinedOnServer && this._connected) void this.request("leave", key, "sys/leave", {}, 5_000).catch(() => undefined);
       throw error;
     }
   }
@@ -425,8 +451,10 @@ export class Room<TView = unknown> {
   private _you: Member | undefined;
   private _closedReason: ClosedReason | "left" | undefined;
   private attached = false;
+  private joinedOnce = false;
   private syncing = false;
   private rejoining: Promise<void> | undefined;
+  private readonly readyWaiters = new Set<{ resolve: () => void; reject: (error: Error) => void }>();
 
   /** @internal */
   constructor(
@@ -530,15 +558,47 @@ export class Room<TView = unknown> {
 
   // ---------------------------------------------------------------- driven by the client
 
-  /** @internal */
+  /** @internal True once the server has accepted a join, also while the first snapshot is still on its way. */
   get _needsRejoin(): boolean {
-    return !this.closed && !this.attached && this.engine.ready;
+    return !this.closed && !this.attached && this.joinedOnce;
+  }
+
+  /** @internal */
+  get _joinedOnce(): boolean {
+    return this.joinedOnce;
   }
 
   /** @internal */
   _joined(now: number): void {
     this.attached = true;
+    this.joinedOnce = true;
     this.engine.expectBaseline(now);
+  }
+
+  /**
+   * @internal Resolves once the first snapshot has been processed. Rejects with RoomClosedError when the room closes
+   * first, and with OutcomeUnknownError when no snapshot arrives within `timeoutMs`.
+   */
+  _whenReady(timeoutMs: number, commandId: string): Promise<void> {
+    if (this.engine.ready) return Promise.resolve();
+    if (this._closedReason !== undefined) return Promise.reject(new RoomClosedError(this._closedReason));
+    return new Promise<void>((resolve, reject) => {
+      const waiter = {
+        resolve: (): void => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (error: Error): void => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      };
+      const timer = setTimeout(() => {
+        this.readyWaiters.delete(waiter);
+        reject(new OutcomeUnknownError(commandId));
+      }, timeoutMs);
+      this.readyWaiters.add(waiter);
+    });
   }
 
   /** @internal */
@@ -593,6 +653,8 @@ export class Room<TView = unknown> {
     this._closedReason = reason;
     this.attached = false;
     this.client._forget(this as Room<unknown>);
+    for (const waiter of [...this.readyWaiters]) waiter.reject(new RoomClosedError(reason));
+    this.readyWaiters.clear();
     if (notify && reason !== "left") {
       for (const handler of [...this.closedHandlers]) handler({ reason, message });
     }
@@ -628,6 +690,8 @@ export class Room<TView = unknown> {
         this._view = snapshot.d as TView;
         this._members = [...snapshot.members];
         this._you = snapshot.you;
+        for (const waiter of [...this.readyWaiters]) waiter.resolve();
+        this.readyWaiters.clear();
         for (const handler of [...this.snapshotHandlers]) handler(this._view, { members: this._members, you: this._you });
       } else if (action.kind === "event") {
         this.deliver(action.event);

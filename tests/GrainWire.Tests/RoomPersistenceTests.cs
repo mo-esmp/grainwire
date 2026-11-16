@@ -163,6 +163,65 @@ public class RoomPersistenceTests(ClusterFixture fixture)
     }
 
     [Fact]
+    public async Task A_deadline_whose_hook_throws_is_kept_and_tried_again()
+    {
+        FakeGateway gateway = NewGateway();
+        (RoomAddress room, string _, string _) = await AliceAndBob(gateway);
+        CounterRoomBase.DeadlineFailures[room.Id] = 1;
+        try
+        {
+            await gateway.Command(room, "alice", "a1", "schedule", new DelayRequest(100));
+
+            // The first attempt throws after changing the state and broadcasting; neither may be seen.
+            await Task.Delay(600);
+            Assert.DoesNotContain(gateway.For("b1"), e => e.Type == "bumped");
+            Assert.Equal(0, FakeGateway.Read<int>((await gateway.Command(room, "alice", "a1", "add", new AddRequest(0))).Data));
+
+            // The failed attempt did not remove the deadline from storage, so it also survives a restart.
+            await Reactivate(gateway, room);
+            await gateway.Renew(room, ("a1", "alice"), ("b1", "bob"));
+
+            // The overdue deadline fires as soon as the room runs again, exactly once.
+            int value = 0;
+            for (int i = 0; i < 100 && value == 0; i++)
+            {
+                await Task.Delay(50);
+                value = FakeGateway.Read<int>((await gateway.Command(room, "alice", "a1", "add", new AddRequest(0))).Data);
+            }
+
+            Assert.Equal(100, value);
+            await Task.Delay(1500);
+            Assert.Equal(100, FakeGateway.Read<int>((await gateway.Command(room, "alice", "a1", "add", new AddRequest(0))).Data));
+        }
+        finally
+        {
+            CounterRoomBase.DeadlineFailures.TryRemove(room.Id, out _);
+        }
+    }
+
+    [Fact]
+    public async Task A_failed_deadline_is_tried_again_without_a_restart()
+    {
+        FakeGateway gateway = NewGateway();
+        (RoomAddress room, string _, string _) = await AliceAndBob(gateway);
+        CounterRoomBase.DeadlineFailures[room.Id] = 1;
+        try
+        {
+            await gateway.Command(room, "alice", "a1", "schedule", new DelayRequest(100));
+            List<Delivered> bob = await gateway.WaitFor("b1", e => e.Any(x => x.Type == "bumped"), timeoutMs: 8000);
+            Assert.Equal(100, bob.Single(e => e.Type == "bumped").Data.GetProperty("value").GetInt32());
+
+            // It fired once: nothing is left to fire again.
+            await Task.Delay(1500);
+            Assert.Single(gateway.For("b1"), e => e.Type == "bumped");
+        }
+        finally
+        {
+            CounterRoomBase.DeadlineFailures.TryRemove(room.Id, out _);
+        }
+    }
+
+    [Fact]
     public async Task An_in_memory_room_is_lost_when_it_restarts_and_a_persistent_one_is_deleted_when_closed()
     {
         FakeGateway gateway = NewGateway();

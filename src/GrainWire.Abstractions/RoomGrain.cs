@@ -33,10 +33,15 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     // Not durable, by design: a new stream epoch and fresh presence on every activation.
     private readonly string _epoch = NewId();
+
+    // Ranks this epoch against the room's other epochs for gateways (see DeliveryBatch.EpochOrder). It starts from the
+    // clock, and is raised when a gateway reports an epoch ranked at or above it, because clocks differ between silos.
+    private long _epochOrder;
     private readonly Dictionary<string, MemberRuntime> _runtime = [with(StringComparer.Ordinal)];
     private readonly Dictionary<string, string> _connectionOwner = [with(StringComparer.Ordinal)];
     private readonly Dictionary<string, GatewayLease> _gateways = [with(StringComparer.Ordinal)];
     private readonly Dictionary<string, IGrainTimer> _deadlineTimers = [with(StringComparer.Ordinal)];
+    private readonly Dictionary<string, int> _deadlineFailures = [with(StringComparer.Ordinal)];
     private readonly Dictionary<string, long> _batchNumbers = [with(StringComparer.Ordinal)];
     private Operation? _op;
 
@@ -48,6 +53,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
         _serializer = services.GetService<IRoomSerializer>() ?? new JsonRoomSerializer();
         _copier = services.GetRequiredService<DeepCopier>();
         _time = services.GetService<TimeProvider>() ?? TimeProvider.System;
+        _epochOrder = _time.GetUtcNow().UtcTicks;
         _log = services.GetRequiredService<ILoggerFactory>().CreateLogger(GetType());
         if (_options.StorageProvider is { } provider)
         {
@@ -192,7 +198,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     async Task<RoomReply> IRoomGrain.Join(JoinRequest request)
     {
-        TouchGateway(request.Gateway);
+        TouchGateway(request.Gateway, request.Known);
         string player = request.Player.Value;
         IReadOnlyDictionary<string, string> claims = (IReadOnlyDictionary<string, string>?)request.Claims ?? s_noClaims;
         Operation op = Begin();
@@ -383,7 +389,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     async Task<RoomReply> IRoomGrain.Sync(SyncRequest request)
     {
-        TouchGateway(request.Gateway);
+        TouchGateway(request.Gateway, request.Known);
         string player = request.Player.Value;
         if (!Record.Exists)
         {
@@ -473,7 +479,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
             return reply;
         }
 
-        TouchGateway(request.Gateway);
+        TouchGateway(request.Gateway, request.Known);
         string gateway = request.Gateway.Id.Value;
         Operation op = Begin();
         try
@@ -668,6 +674,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
         // Committed. From here on nothing can fail the operation.
         foreach ((string? name, DateTimeOffset? due) in scope.DeadlineChanges)
         {
+            _deadlineFailures.Remove(name);
             if (due is { } at)
             {
                 ArmDeadline(name, at);
@@ -810,6 +817,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
             // One-way calls can arrive out of order. The number lets the gateway put a room's batches back in order.
             _batchNumbers[gateway] = batch.Number = _batchNumbers.GetValueOrDefault(gateway) + 1;
+            batch.EpochOrder = _epochOrder;
             try
             {
                 // One-way: the room does not wait for delivery. A lost batch is repaired by the client's sync.
@@ -904,6 +912,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
         _runtime.Clear();
         _connectionOwner.Clear();
+        _deadlineFailures.Clear();
         foreach (string? name in _deadlineTimers.Keys.ToList())
         {
             DisarmDeadline(name);
@@ -928,7 +937,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     // ---------------------------------------------------------------- connections, presence, leases
 
-    private void TouchGateway(GatewayRef gateway)
+    private void TouchGateway(GatewayRef gateway, KnownEpoch known = default)
     {
         if (!_gateways.TryGetValue(gateway.Id.Value, out GatewayLease? lease))
         {
@@ -937,6 +946,13 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
         lease.Observer = gateway.Observer;
         lease.LastRenewal = Now;
+
+        // The gateway has seen another epoch of this room ranked at or above this one, so it would drop this epoch's
+        // batches as stale. This epoch is the live one (the gateway is talking to it), so it moves above.
+        if (known.Epoch is not null && known.Epoch != _epoch && known.Order >= _epochOrder && known.Order < long.MaxValue)
+        {
+            _epochOrder = known.Order + 1;
+        }
     }
 
     /// <summary>Attaches a connection to a member. Returns true when it was not attached before.</summary>
@@ -1100,10 +1116,27 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
 
     // ---------------------------------------------------------------- deadlines
 
-    private void ArmDeadline(string name, DateTimeOffset due)
+    private void ArmDeadline(string name, DateTimeOffset due) => ArmDeadlineIn(name, due - Now);
+
+    /// <summary>
+    /// A deadline whose hook failed is still due. Tries it again after a second, then after longer and longer waits
+    /// up to a minute, so a hook that keeps failing does not spin.
+    /// </summary>
+    private void RetryDeadlineLater(string name)
+    {
+        // Gone with the room, or already re-armed because the state was reloaded.
+        if (!Record.Exists || !Record.Deadlines.ContainsKey(name) || _deadlineTimers.ContainsKey(name))
+        {
+            return;
+        }
+
+        int failures = _deadlineFailures[name] = _deadlineFailures.GetValueOrDefault(name) + 1;
+        ArmDeadlineIn(name, TimeSpan.FromSeconds(Math.Min(60, Math.Pow(2, Math.Min(failures - 1, 6)))));
+    }
+
+    private void ArmDeadlineIn(string name, TimeSpan delay)
     {
         DisarmDeadline(name);
-        TimeSpan delay = due - Now;
         if (delay < TimeSpan.Zero)
         {
             delay = TimeSpan.Zero;
@@ -1141,15 +1174,26 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
             return;
         }
 
+        bool failed = false;
         Operation op = Begin();
         try
         {
-            op.Current.DeadlineChanges.Add((name, null));
-            op.NeedsSave = true;
-            Exception? failure = await Guarded(() => OnDeadline(name));
+            // Removing the deadline is part of the hook's own scope: a hook that throws changes nothing, so its
+            // deadline stays and is tried again. The hook may schedule the same name again; that change comes later
+            // in the scope and wins.
+            Exception? failure = await Guarded(() =>
+            {
+                CurrentScope().DeadlineChanges.Add((name, null));
+                return OnDeadline(name);
+            });
             if (failure is not null)
             {
-                _log.LogError(failure, "OnDeadline('{Deadline}') failed in room {Room}.", name, RoomId);
+                _log.LogError(failure, "OnDeadline('{Deadline}') failed in room {Room}; it will be tried again.", name, RoomId);
+                failed = true;
+            }
+            else
+            {
+                op.NeedsSave = true;
             }
 
             await CommitAsync(op);
@@ -1157,6 +1201,11 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
         finally
         {
             End();
+        }
+
+        if (failed)
+        {
+            RetryDeadlineLater(name);
         }
     }
 

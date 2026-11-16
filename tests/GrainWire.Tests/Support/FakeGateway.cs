@@ -53,10 +53,18 @@ public sealed class FakeGateway : IGatewayObserver
 
     public GatewayRef Ref { get; }
 
+    /// <summary>What this gateway tells rooms about the newest epoch it has seen. Nothing by default.</summary>
+    public KnownEpoch Known { get; set; }
+
+    /// <summary>The highest epoch order of any batch received so far.</summary>
+    public long HighestEpochOrder { get; private set; }
+
     public Task Deliver(DeliveryBatch batch)
     {
         lock (_delivered)
         {
+            HighestEpochOrder = Math.Max(HighestEpochOrder, batch.EpochOrder);
+
             // One-way calls can arrive out of order; like the real gateway, order by the room's batch number.
             string epochKey = batch.Room + "|" + batch.Epoch;
             if (!_epochs.Contains(epochKey))
@@ -125,6 +133,7 @@ public sealed class FakeGateway : IGatewayObserver
             Create = create,
             Options = Bytes(options),
             Data = Bytes(data),
+            Known = Known,
         });
 
     public Task<RoomReply> Command(RoomAddress room, string player, string clientId, string name, object? payload = null, string? commandId = null, string? incarnation = null, long generation = 1) =>
@@ -148,6 +157,7 @@ public sealed class FakeGateway : IGatewayObserver
             Incarnation = incarnation,
             Epoch = epoch,
             Seq = seq,
+            Known = Known,
         });
 
     public Task Detach(RoomAddress room, string clientId, long generation = 1) =>
@@ -158,6 +168,7 @@ public sealed class FakeGateway : IGatewayObserver
         {
             Gateway = Ref,
             Connections = [.. connections.Select(c => new RenewEntry { Connection = new ConnectionId(c.ClientId, 1), Player = new PlayerId(c.Player) })],
+            Known = Known,
         });
 
     public static T Read<T>(byte[]? data) => JsonSerializer.Deserialize<T>(data!, s_json)!;
