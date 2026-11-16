@@ -4,6 +4,7 @@ using GrainWire.Protocol;
 using GrainWire.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Orleans.Serialization;
 
 namespace GrainWire;
@@ -88,8 +89,7 @@ public abstract class RoomGrain<TState> : Grain, IRoomGrain where TState : class
         }
     }
 
-    protected RoomMember? FindMember(PlayerId player) =>
-        player.Value is not null && Record.Members.TryGetValue(player.Value, out MemberRecord? member) ? ToRoomMember(member) : null;
+    protected RoomMember? FindMember(PlayerId player) => Record.Members.TryGetValue(player.Value, out MemberRecord? member) ? ToRoomMember(member) : null;
 
     /// <summary>Decides whether <see cref="CreateContext.Creator"/> may create this room. Default: allow.</summary>
     protected virtual Task<CreateResult> OnCreate(CreateContext context) => Task.FromResult(CreateResult.Allow());
