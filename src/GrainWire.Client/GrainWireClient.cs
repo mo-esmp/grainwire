@@ -27,9 +27,9 @@ public sealed class GrainWireClient : IAsyncDisposable
 
     // Guarded by Gate. Methods named ...Locked expect the caller to hold it. Nothing is awaited and no app code is
     // called while it is held: handlers go through Callbacks, which runs them after the lock is released.
-    private readonly Dictionary<string, Room> _rooms = [with(StringComparer.Ordinal)];
-    private readonly Dictionary<string, JoinOperation> _joining = [with(StringComparer.Ordinal)];
-    private readonly Dictionary<string, PendingRequest> _pending = [with(StringComparer.Ordinal)];
+    private readonly Dictionary<string, Room> _rooms = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, JoinOperation> _joining = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, PendingRequest> _pending = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _shutdown = new();
     private IMqttClient? _mqtt;
     private Task _ticker = Task.CompletedTask;

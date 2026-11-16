@@ -151,6 +151,30 @@ public class OrderingEngineTests
     }
 
     [Fact]
+    public void Stops_asking_after_a_failover_however_often_the_server_answers_in_sync()
+    {
+        OrderingEngine engine = new(s_options, 0);
+        engine.ReceiveSnapshot(Snapshot(5, "e1"), 0);
+        engine.ReceiveSnapshot(Snapshot(2, "e2"), 10); // the room restarted
+        engine.ReceiveEvent(Event(6, "e1"), 20); // a late event of the old epoch
+
+        // One minute of ticks, every sync answered with "in-sync".
+        int syncs = 0;
+        for (long now = 100; now <= 60_000; now += 100)
+        {
+            if (engine.Tick(now).Count > 0)
+            {
+                syncs++;
+                engine.ConfirmInSync(now + 10);
+            }
+        }
+
+        // One sync to find out about the held event, and then only the regular check of a silent room (every 15 s).
+        Assert.InRange(syncs, 1, 4);
+        Assert.Equal(new StreamPosition("i1", "e2", 2), engine.Current);
+    }
+
+    [Fact]
     public void Keeps_later_events_of_the_current_stream_when_the_server_says_the_client_is_in_sync()
     {
         OrderingEngine engine = new(s_options, 0);

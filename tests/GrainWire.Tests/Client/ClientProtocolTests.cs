@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using System.Diagnostics;
 using GrainWire.Client;
 using MQTTnet;
 using JoinOptions = GrainWire.Client.JoinOptions;
@@ -68,6 +69,9 @@ public sealed class ClientProtocolTests : IAsyncLifetime
         room.On<Counter>("changed", (data, meta) => seen.Enqueue($"E{data.Value}#{meta.Seq}"));
         return seen;
     }
+
+    /// <summary>How many times the client has asked to join so far.</summary>
+    private int Joins() => _gateway.All().Count(published => published.Topic.EndsWith("/sys/join", StringComparison.Ordinal));
 
     private static async Task Until(Func<bool> condition, string what, int timeoutMs = 10_000)
     {
@@ -448,6 +452,99 @@ public sealed class ClientProtocolTests : IAsyncLifetime
         await _gateway.Event(client.ClientId, seq: 2, value: 2);
         await Until(() => seen.Count == 3, "the next event");
         Assert.Equal(["S0", "S1", "E2#2"], seen);
+    }
+
+    [Fact]
+    public async Task A_room_that_cannot_be_reached_after_a_reconnect_is_joined_again_without_another_reconnect()
+    {
+        GrainWireClient client = await Connect();
+        ConcurrentQueue<ConnectionState> states = new();
+        client.StateChanged += states.Enqueue;
+        Room<Counter> room = await Join(client);
+        ConcurrentQueue<string> seen = Watch(room);
+        await _gateway.Disconnect(client.ClientId);
+
+        // The room's silo is still recovering: the gateway cannot reach the room yet.
+        Published first = await _gateway.Next("sys/join");
+        await _gateway.Reply(client.ClientId, first.CommandId, status: "error", code: "unavailable");
+        Published second = await _gateway.Next("sys/join");
+        await _gateway.Reply(client.ClientId, second.CommandId, status: "error", code: "unavailable");
+
+        // The connection stayed up all the while; the room has to come back on its own. Each attempt is a new request.
+        Published third = await _gateway.Next("sys/join");
+        Assert.Equal(3, new[] { first.CommandId, second.CommandId, third.CommandId }.Distinct().Count());
+        await Until(() => states.Count == 2, "both state changes");
+        Assert.Equal([ConnectionState.Reconnecting, ConnectionState.Connected], states);
+        Assert.False(room.IsClosed);
+
+        // Attached again: the room follows its stream from the fresh snapshot, and the joins stop.
+        await _gateway.Snapshot(client.ClientId, at: 4, value: 4);
+        await _gateway.Reply(client.ClientId, third.CommandId, code: "joined");
+        await _gateway.Event(client.ClientId, seq: 5, value: 5);
+        await Until(() => seen.Count == 3, "the snapshot and the next event");
+        Assert.Equal(["S0", "S4", "E5#5"], seen);
+        await Task.Delay(600);
+        Assert.Equal(4, Joins());
+    }
+
+    [Fact]
+    public async Task A_room_that_stays_unreachable_is_asked_for_less_and_less_often()
+    {
+        GrainWireClient client = await Connect(options =>
+        {
+            options.ReconnectDelay = TimeSpan.FromMilliseconds(100);
+            options.MaxReconnectDelay = TimeSpan.FromMilliseconds(800);
+        });
+        await Join(client);
+        await _gateway.Disconnect(client.ClientId);
+
+        // Waits of about 0.1 s, 0.2 s, 0.4 s and then 0.8 s (each with up to 25% jitter) between the attempts.
+        Stopwatch clock = Stopwatch.StartNew();
+        List<TimeSpan> attempts = [];
+        for (int i = 0; i < 5; i++)
+        {
+            Published join = await _gateway.Next("sys/join");
+            attempts.Add(clock.Elapsed);
+            await _gateway.Reply(client.ClientId, join.CommandId, status: "error", code: "unavailable");
+        }
+
+        Assert.True(attempts[4] - attempts[3] > TimeSpan.FromMilliseconds(400), $"The last wait was {attempts[4] - attempts[3]}.");
+        Assert.True(attempts[4] - attempts[3] > attempts[1] - attempts[0], "The waits did not grow.");
+    }
+
+    [Fact]
+    public async Task A_rejoin_that_gets_no_reply_at_all_is_tried_again()
+    {
+        GrainWireClient client = await Connect(options => options.RequestTimeout = TimeSpan.FromSeconds(1));
+        Room<Counter> room = await Join(client);
+        ConcurrentQueue<string> seen = Watch(room);
+        await _gateway.Disconnect(client.ClientId);
+
+        // The first attempt is never answered. Once it has timed out, the room is joined with a new request.
+        Published first = await _gateway.Next("sys/join");
+        Published second = await _gateway.Next("sys/join");
+        Assert.NotEqual(first.CommandId, second.CommandId);
+        await _gateway.Snapshot(client.ClientId, at: 2, value: 2);
+        await _gateway.Reply(client.ClientId, second.CommandId, code: "joined");
+        await Until(() => seen.Count == 2, "the fresh snapshot");
+        Assert.Equal(["S0", "S2"], seen);
+    }
+
+    [Fact]
+    public async Task A_room_that_is_gone_after_a_reconnect_is_closed_and_not_joined_again()
+    {
+        GrainWireClient client = await Connect();
+        Room<Counter> room = await Join(client);
+        ConcurrentQueue<ClosedInfo> closed = new();
+        room.OnClosed(closed.Enqueue);
+        await _gateway.Disconnect(client.ClientId);
+
+        Published rejoin = await _gateway.Next("sys/join");
+        await _gateway.Reply(client.ClientId, rejoin.CommandId, status: "error", code: "room-not-found");
+        await Until(() => closed.Count == 1, "the closure");
+        Assert.Equal(RoomClosedReason.Lost, room.ClosedReason);
+        await Task.Delay(600);
+        Assert.Equal(2, Joins());
     }
 
     [Fact]

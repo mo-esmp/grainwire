@@ -20,7 +20,7 @@ public abstract class Room
     // Everything below is guarded by the client's lock. Methods named ...Locked expect the caller to hold it.
     private readonly OrderingEngine _engine;
     private readonly byte[]? _joinData;
-    private readonly Dictionary<string, ImmutableArray<Action<JsonElement, EventMeta>>> _eventHandlers = [with(StringComparer.Ordinal)];
+    private readonly Dictionary<string, ImmutableArray<Action<JsonElement, EventMeta>>> _eventHandlers = new(StringComparer.Ordinal);
     private readonly List<ReadyWaiter> _readyWaiters = [];
     private readonly List<Action> _syncWaiters = [];
     private ImmutableArray<Action<string, JsonElement, EventMeta>> _anyHandlers = [];
@@ -33,6 +33,8 @@ public abstract class Room
     private bool _attached;
     private bool _joinedOnce;
     private bool _syncing;
+    private TimeSpan _rejoinDelay;
+    private long? _nextRejoinAt;
 
     private protected Room(GrainWireClient client, string type, string id, byte[]? joinData)
     {
@@ -41,6 +43,7 @@ public abstract class Room
         Id = id;
         Key = $"{type}/{id}";
         _joinData = joinData;
+        _rejoinDelay = client.Options.ReconnectDelay;
         _engine = new OrderingEngine(
             new OrderingOptions { GapWait = client.Options.GapWait, SyncInterval = client.Options.SyncInterval },
             GrainWireClient.Now);
@@ -285,6 +288,8 @@ public abstract class Room
     {
         _attached = true;
         _joinedOnce = true;
+        _rejoinDelay = Client.Options.ReconnectDelay;
+        _nextRejoinAt = null;
         _engine.ExpectBaseline(now);
     }
 
@@ -339,11 +344,13 @@ public abstract class Room
     {
         _attached = false;
         _syncing = false;
+        _nextRejoinAt = null; // the reconnect joins again
     }
 
     /// <summary>
     /// Joins again after a reconnect. The server keeps the seat and sends a fresh snapshot. <paramref name="then"/> is
-    /// called when the attempt is over, whatever its outcome.
+    /// called when the attempt is over, whatever its outcome. An attempt that fails for a passing reason is repeated
+    /// from <see cref="TickLocked"/>.
     /// </summary>
     internal void RejoinLocked(Action? then)
     {
@@ -372,23 +379,29 @@ public abstract class Room
         _rejoinWaiters = waiters;
         PendingRequest? pending = Client.RequestLocked(RequestKind.Join, Key, Wire.Join, commandId => ClientPayload.Join(commandId, create: false, null, _joinData), null, (reply, _) =>
         {
-            if (reply is not null)
+            if (reply is null)
             {
-                if (reply.Status == ReplyStatus.Ok)
-                {
-                    JoinedLocked(GrainWireClient.Now);
-                }
-                else if (reply.Code == Wire.RoomNotFound)
-                {
-                    CloseLocked(RoomClosedReason.Lost, null, notify: true);
-                }
-                else if (reply.Status == ReplyStatus.Rejected || reply.Code == Wire.NotMember)
-                {
-                    CloseLocked(RoomClosedReason.Removed, reply.Reason, notify: true);
-                }
+                // No reply in time. If the connection is gone, the reconnect joins again; if it is up, a later tick does.
+                RetryRejoinLaterLocked();
+            }
+            else if (reply.Status == ReplyStatus.Ok)
+            {
+                JoinedLocked(GrainWireClient.Now);
+            }
+            else if (reply.Code == Wire.RoomNotFound)
+            {
+                CloseLocked(RoomClosedReason.Lost, null, notify: true);
+            }
+            else if (reply.Status == ReplyStatus.Rejected || reply.Code == Wire.NotMember)
+            {
+                CloseLocked(RoomClosedReason.Removed, reply.Reason, notify: true);
+            }
+            else
+            {
+                // "unavailable" and the like: the room could not be reached just now (a silo is recovering, say).
+                RetryRejoinLaterLocked();
             }
 
-            // No reply (not connected, or timed out): the next reconnect tries again.
             FinishRejoinLocked(waiters);
         });
 
@@ -421,8 +434,21 @@ public abstract class Room
 
     internal void TickLocked(long now)
     {
-        if (_closedReason is not null || !_attached)
+        if (_closedReason is not null)
         {
+            return;
+        }
+
+        if (!_attached)
+        {
+            // A join that failed for a passing reason is tried again while the connection stays up. Without this the
+            // room would stay detached, and silently stale, until the connection happened to drop.
+            if (_nextRejoinAt is { } due && now >= due)
+            {
+                _nextRejoinAt = null;
+                RejoinLocked(null);
+            }
+
             return;
         }
 
@@ -558,6 +584,18 @@ public abstract class Room
         {
             waiter();
         }
+    }
+
+    /// <summary>Schedules another join, a little later each time (with jitter, so many clients do not all return at once).</summary>
+    private void RetryRejoinLaterLocked()
+    {
+        if (_closedReason is not null || _attached)
+        {
+            return;
+        }
+
+        _nextRejoinAt = GrainWireClient.Now + (long)(_rejoinDelay.TotalMilliseconds * (0.75 + (Random.Shared.NextDouble() * 0.5)));
+        _rejoinDelay = _rejoinDelay * 2 < Client.Options.MaxReconnectDelay ? _rejoinDelay * 2 : Client.Options.MaxReconnectDelay;
     }
 
     private void FinishRejoinLocked(List<Action> waiters)
