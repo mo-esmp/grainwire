@@ -426,3 +426,12 @@ FodyWeavers.xsd
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
+
+# TypeScript client
+clients/ts/dist/
+*.tgz
+
+# Chess sample: the web client is built into here
+samples/Chess/Server/wwwroot/
+samples/Chess/Web/test-results/
+samples/Chess/Web/playwright-report/

@@ -1,0 +1,1 @@
+{"t":"$snapshot","room":"chess/abc123","ri":"c1a0","se":"7f30","at":41,"d":{"value":3},"members":[{"player":"alice","role":"white","status":"online"},{"player":"bob","status":"reconnecting"}],"you":{"player":"alice","role":"white","status":"online"}}

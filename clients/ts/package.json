@@ -1,0 +1,49 @@
+{
+  "name": "@grainwire/client",
+  "version": "0.1.0-preview.1",
+  "description": "Browser client for GrainWire: real-time rooms over MQTT, backed by Orleans grains.",
+  "license": "MIT",
+  "author": "Mohsen Esmailpour",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mo-esmp/grainwire.git",
+    "directory": "clients/ts"
+  },
+  "keywords": [
+    "grainwire",
+    "mqtt",
+    "orleans",
+    "realtime",
+    "multiplayer",
+    "rooms"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run test/ordering.test.ts test/golden.test.ts test/room.test.ts"
+  },
+  "dependencies": {
+    "mqtt": "^5.16.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "fast-check": "^4.10.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}

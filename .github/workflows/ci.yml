@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  dotnet:
+    runs-on: ubuntu-latest
+    env:
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore
+      - run: dotnet build --no-restore -c Release
+      - run: dotnet test --no-build -c Release --logger "trx;LogFileName=test-results.trx"
+      - run: dotnet pack --no-build -c Release -o artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: artifacts/*.nupkg
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: dotnet build tests/GrainWire.TestHost
+      - run: npm ci
+        working-directory: clients/ts
+      - run: npm run typecheck
+        working-directory: clients/ts
+      - run: npm run build
+        working-directory: clients/ts
+      - run: npm test
+        working-directory: clients/ts
+      - run: npm pack
+        working-directory: clients/ts
+
+  chess-sample:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: dotnet build samples/Chess/Server
+      - run: npm ci && npm run build
+        working-directory: clients/ts
+      - run: npm ci
+        working-directory: samples/Chess/Web
+      - run: npx playwright install --with-deps chromium
+        working-directory: samples/Chess/Web
+      - run: npm run e2e
+        working-directory: samples/Chess/Web

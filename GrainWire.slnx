@@ -1,0 +1,25 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GrainWire.Abstractions/GrainWire.Abstractions.csproj" />
+    <Project Path="src/GrainWire.Server/GrainWire.Server.csproj" />
+  </Folder>
+  <Folder Name="/assets/">
+    <File Path=".editorconfig" />
+    <File Path=".gitignore" />
+    <File Path="CHANGELOG.md" />
+    <File Path="CONTRIBUTING.md" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/bench/">
+    <Project Path="bench/GrainWire.Bench/GrainWire.Bench.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Chess/Server/Chess.Server.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GrainWire.Tests/GrainWire.Tests.csproj" />
+    <Project Path="tests/GrainWire.TestHost/GrainWire.TestHost.csproj" />
+  </Folder>
+</Solution>

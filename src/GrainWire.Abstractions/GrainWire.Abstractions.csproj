@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>GrainWire</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>GrainWire room grains: write real-time room logic as an Orleans grain. Contracts, the RoomGrain base class and silo registration.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- PrivateAssets="none" lets Orleans' code generator and analyzers reach projects that reference this package,
+         so a grain project needs nothing else to compile its room grains and state classes. -->
+    <PackageReference Include="Microsoft.Orleans.Sdk" PrivateAssets="none" />
+    <PackageReference Include="Microsoft.Orleans.Runtime" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <InternalsVisibleTo Include="GrainWire.Server" />
+    <InternalsVisibleTo Include="GrainWire.Tests" />
+  </ItemGroup>
+</Project>
