@@ -9,7 +9,6 @@ using MQTTnet.Packets;
 using MQTTnet.Protocol;
 using MQTTnet.Server;
 using Orleans.Metadata;
-using Orleans.Runtime;
 
 namespace GrainWire.Server.Internal;
 
@@ -35,9 +34,8 @@ internal sealed partial class Gateway : IGatewayObserver
     private readonly ConcurrentDictionary<string, RoomAttachments> _directory = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, bool> _knownRoomTypes = new(StringComparer.Ordinal);
     private readonly ConcurrentQueue<(RoomAddress Room, ConnectionId Connection)> _pendingDetaches = new();
-    private readonly object _refGate = new();
+    private readonly Lock _refGate = new();
     private MqttServer? _server;
-    private GatewayRef? _ref;
 
     public Gateway(IGrainFactory grains, IClusterManifestProvider manifest, IConnectionAuthenticator authenticator, GrainWireGatewayOptions options, ILogger<Gateway> log)
     {
@@ -267,7 +265,7 @@ internal sealed partial class Gateway : IGatewayObserver
         ClientTopic topic = inbound.Topic;
         RoomAddress room = topic.Room;
         string roomKey = room.ToString();
-        if (!ClientMessage.TryParse(inbound.Payload, out ClientMessage? message))
+        if (!ClientMessage.TryParse(inbound.Payload, out ClientMessage message))
         {
             _log.LogDebug("Dropping a message from {ClientId}: the payload is not a JSON object.", connection.ClientId);
             return;
@@ -422,7 +420,7 @@ internal sealed partial class Gateway : IGatewayObserver
     {
         try
         {
-            if (ClientMessage.TryParse(payload, out ClientMessage? message) && message is { CommandId: not null, NoReply: false })
+            if (ClientMessage.TryParse(payload, out ClientMessage message) && message is { CommandId: not null, NoReply: false })
             {
                 await PublishAsync(connection.ClientId, Envelopes.Reply(topic.Room.ToString(), message.CommandId, reply));
             }
@@ -531,14 +529,14 @@ internal sealed partial class Gateway : IGatewayObserver
     {
         get
         {
-            if (_ref is not null)
+            if (field is not null)
             {
-                return _ref;
+                return field;
             }
 
             lock (_refGate)
             {
-                return _ref ??= new GatewayRef { Id = Id, Observer = _grains.CreateObjectReference<IGatewayObserver>(this) };
+                return field ??= new GatewayRef { Id = Id, Observer = _grains.CreateObjectReference<IGatewayObserver>(this) };
             }
         }
     }
@@ -667,7 +665,7 @@ internal sealed partial class Gateway : IGatewayObserver
             _log.LogDebug(ex, "The worker of {ClientId} ended with an error.", connection.ClientId);
         }
 
-        foreach ((string? roomKey, RoomAddress room) in connection.Rooms.ToArray())
+        foreach ((string roomKey, RoomAddress room) in connection.Rooms.ToArray())
         {
             await DropRoomAsync(connection, roomKey, room, detach: true);
         }

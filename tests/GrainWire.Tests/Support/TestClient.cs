@@ -1,5 +1,4 @@
-﻿using System.Text;
-using System.Text.Json;
+﻿using System.Text.Json;
 using MQTTnet;
 using MQTTnet.Formatter;
 using MQTTnet.Protocol;

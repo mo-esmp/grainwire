@@ -1,8 +1,6 @@
 ﻿using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Orleans.Hosting;
-using Orleans.Runtime;
 
 namespace GrainWire;
 

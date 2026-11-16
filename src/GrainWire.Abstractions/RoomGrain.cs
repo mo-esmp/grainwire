@@ -4,8 +4,6 @@ using GrainWire.Protocol;
 using GrainWire.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using Orleans.Runtime;
 using Orleans.Serialization;
 
 namespace GrainWire;
