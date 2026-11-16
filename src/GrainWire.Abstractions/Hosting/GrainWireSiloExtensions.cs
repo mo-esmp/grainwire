@@ -1,9 +1,6 @@
 ﻿using System.Text.Json;
-using GrainWire.Internal;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Options;
-using Orleans.Configuration;
 using Orleans.Hosting;
 using Orleans.Runtime;
 
@@ -52,51 +49,4 @@ public sealed class GrainWireSiloBuilder
 
     /// <summary>Uses the built-in JSON serializer with custom options.</summary>
     public GrainWireSiloBuilder UseJson(JsonSerializerOptions options) => UseSerializer(new JsonRoomSerializer(options));
-}
-
-/// <summary>The default payload serializer: System.Text.Json with web defaults (camelCase).</summary>
-public sealed class JsonRoomSerializer : IRoomSerializer
-{
-    private readonly JsonSerializerOptions _options;
-
-    public JsonRoomSerializer(JsonSerializerOptions? options = null) => _options = options ?? new JsonSerializerOptions(JsonSerializerDefaults.Web);
-
-    public byte[]? Serialize(object? value) => value is null ? null : JsonSerializer.SerializeToUtf8Bytes(value, value.GetType(), _options);
-
-    public object? Deserialize(byte[] data, Type type) => JsonSerializer.Deserialize(data, type, _options);
-}
-
-/// <summary>Refuses to start a silo that contains a room grain which could run two operations at once.</summary>
-internal sealed class RoomGrainValidator(IOptions<GrainTypeOptions> grainTypes) : ILifecycleParticipant<ISiloLifecycle>
-{
-    public void Participate(ISiloLifecycle lifecycle)
-    {
-        lifecycle.Subscribe(nameof(RoomGrainValidator), ServiceLifecycleStage.RuntimeInitialize, cancellationToken =>
-        {
-            foreach (Type grainClass in grainTypes.Value.Classes)
-            {
-                if (!IsRoomGrain(grainClass) || grainClass.IsAbstract)
-                {
-                    continue;
-                }
-
-                _ = RoomTypeInfo.For(grainClass);
-            }
-
-            return Task.CompletedTask;
-        });
-    }
-
-    private static bool IsRoomGrain(Type type)
-    {
-        for (Type? current = type.BaseType; current is not null; current = current.BaseType)
-        {
-            if (current.IsGenericType && current.GetGenericTypeDefinition() == typeof(RoomGrain<>))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
 }
