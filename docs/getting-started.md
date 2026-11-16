@@ -180,7 +180,7 @@ await using var client = await GrainWireClient.ConnectAsync(new GrainWireClientO
 var room = await client.JoinAsync<ChatView>("chat", "lobby", new JoinOptions { Create = true });
 
 // A snapshot arrives after joining, after a reconnect, and whenever the client had to catch up.
-room.OnSnapshot((view, _) => view.Lines.ForEach(Show));
+room.OnSnapshot((view, _) => view?.Lines.ForEach(Show));
 room.On<ChatLine>("said", Show);
 room.OnPresence(p => Console.WriteLine($"({p.Player} is {p.Status})"));
 

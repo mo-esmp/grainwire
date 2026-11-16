@@ -71,7 +71,7 @@ public sealed class ClientIntegrationTests(ClientServerFixture server) : IClassF
             Seen seen = new();
             room.OnSnapshot((view, _) =>
             {
-                seen.Snapshots.Enqueue(view.Value);
+                seen.Snapshots.Enqueue(view!.Value);
                 seen.Values.Enqueue(view.Value);
             });
             room.On<Changed>("changed", (data, meta) =>

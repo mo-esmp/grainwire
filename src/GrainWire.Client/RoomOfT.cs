@@ -9,7 +9,7 @@ namespace GrainWire.Client;
 /// <typeparam name="TView">The type the server's snapshot (<c>GetSnapshot</c>) is deserialized to.</typeparam>
 public sealed class Room<TView> : Room
 {
-    private ImmutableArray<Action<TView, SnapshotInfo>> _snapshotHandlers = [];
+    private ImmutableArray<Action<TView?, SnapshotInfo>> _snapshotHandlers = [];
     private Lazy<TView?>? _view;
 
     internal Room(GrainWireClient client, string type, string id, byte[]? joinData)
@@ -19,6 +19,8 @@ public sealed class Room<TView> : Room
 
     /// <summary>
     /// The latest snapshot of the room as this player may see it. Events are not applied to it: that is the app's job.
+    /// Null (the default of <typeparamref name="TView"/>) before the first snapshot, and when the room's
+    /// <c>GetSnapshot</c> returns nothing.
     /// </summary>
     /// <exception cref="JsonException">The snapshot cannot be read as <typeparamref name="TView"/>.</exception>
     public TView? View
@@ -38,9 +40,11 @@ public sealed class Room<TView> : Room
     /// <summary>
     /// Calls <paramref name="handler"/> with every snapshot: after joining, after a reconnect, and whenever the room had
     /// to catch up. If the room already has a snapshot, the handler is called with it right away. Treat a snapshot as
-    /// "this is the state now": it carries the effects of events that may never have been delivered.
+    /// "this is the state now": it carries the effects of events that may never have been delivered. The view is null
+    /// (the default of <typeparamref name="TView"/>) when the room's <c>GetSnapshot</c> returns nothing.
     /// </summary>
-    public IDisposable OnSnapshot(Action<TView, SnapshotInfo> handler)
+    /// <remarks>If the snapshot cannot be read as <typeparamref name="TView"/>, the handler is not called and the error goes to <see cref="GrainWireClientOptions.OnHandlerError"/>.</remarks>
+    public IDisposable OnSnapshot(Action<TView?, SnapshotInfo> handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
         lock (Client.Gate)
@@ -49,7 +53,7 @@ public sealed class Room<TView> : Room
             if (_view is { } view && YouLocked is { } you)
             {
                 SnapshotInfo info = new(MembersLocked, you);
-                Client.Callbacks.Enqueue(() => handler(view.Value!, info));
+                Client.Callbacks.Enqueue(() => handler(view.Value, info));
             }
         }
 
@@ -71,9 +75,9 @@ public sealed class Room<TView> : Room
         JsonSerializerOptions json = Client.Options.SerializerOptions!;
         Lazy<TView?> view = new(() => Payloads.Deserialize<TView>(data, json));
         _view = view;
-        foreach (Action<TView, SnapshotInfo> handler in _snapshotHandlers)
+        foreach (Action<TView?, SnapshotInfo> handler in _snapshotHandlers)
         {
-            Client.Callbacks.Enqueue(() => handler(view.Value!, info));
+            Client.Callbacks.Enqueue(() => handler(view.Value, info));
         }
     }
 }

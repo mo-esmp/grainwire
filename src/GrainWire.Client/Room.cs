@@ -282,6 +282,9 @@ public abstract class Room
 
     internal bool JoinedOnceLocked => _joinedOnce;
 
+    /// <summary>True while the gateway of the current connection knows this connection is in the room.</summary>
+    internal bool IsAttachedLocked => _attached;
+
     internal RoomClosedReason? ClosedReasonLocked => _closedReason;
 
     internal void JoinedLocked(long now)
@@ -411,6 +414,26 @@ public abstract class Room
         }
     }
 
+    /// <summary>
+    /// The gateway answered a command with "not-joined": it does not know this connection is in the room. Joins again
+    /// and calls <paramref name="then"/> when that attempt is over. When a join is already waiting for its next try,
+    /// nothing is started and <paramref name="then"/> is not called: the room's commands are sent again once it is back.
+    /// </summary>
+    internal void NotJoinedLocked(Action then)
+    {
+        if (_closedReason is null)
+        {
+            // Detached, so that a join which fails for a passing reason is tried again (see RetryRejoinLaterLocked).
+            _attached = false;
+            if (_nextRejoinAt is not null)
+            {
+                return;
+            }
+        }
+
+        RejoinLocked(then);
+    }
+
     internal void ReceiveLocked(InboxEnvelope envelope, long now)
     {
         if (_closedReason is not null)
@@ -446,7 +469,14 @@ public abstract class Room
             if (_nextRejoinAt is { } due && now >= due)
             {
                 _nextRejoinAt = null;
-                RejoinLocked(null);
+                RejoinLocked(() =>
+                {
+                    // Commands that were waiting for the room go out again now, under their original ids.
+                    if (_attached)
+                    {
+                        Client.ResendCommandsLocked(Key);
+                    }
+                });
             }
 
             return;

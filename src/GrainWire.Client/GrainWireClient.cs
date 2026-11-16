@@ -577,7 +577,11 @@ public sealed class GrainWireClient : IAsyncDisposable
         }
     }
 
-    private void ResendCommandsLocked()
+    /// <summary>
+    /// Sends the commands that still wait for a reply again, under their original command ids: all of them, or only
+    /// those of one room.
+    /// </summary>
+    internal void ResendCommandsLocked(string? roomKey = null)
     {
         if (_state != ConnectionState.Connected)
         {
@@ -586,7 +590,7 @@ public sealed class GrainWireClient : IAsyncDisposable
 
         foreach (PendingRequest pending in _pending.Values.ToArray())
         {
-            if (pending.Kind == RequestKind.Command)
+            if (pending.Kind == RequestKind.Command && (roomKey is null || pending.RoomKey == roomKey))
             {
                 PublishLocked(pending);
             }
@@ -690,9 +694,10 @@ public sealed class GrainWireClient : IAsyncDisposable
             // This gateway does not know the connection is in the room (it reconnected elsewhere): join again, then re-send.
             if (reply.Code == Wire.NotJoined && _rooms.TryGetValue(pending.RoomKey, out Room? room))
             {
-                room.RejoinLocked(() =>
+                // If the join fails for now, the room tries again later and re-sends its commands once it is back.
+                room.NotJoinedLocked(() =>
                 {
-                    if (_pending.ContainsKey(pending.CommandId))
+                    if (room.IsAttachedLocked && _pending.ContainsKey(pending.CommandId))
                     {
                         PublishLocked(pending);
                     }

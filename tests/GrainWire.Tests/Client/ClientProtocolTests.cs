@@ -1,5 +1,6 @@
 ﻿using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text.Json.Nodes;
 using GrainWire.Client;
 using MQTTnet;
 using JoinOptions = GrainWire.Client.JoinOptions;
@@ -65,7 +66,7 @@ public sealed class ClientProtocolTests : IAsyncLifetime
     private static ConcurrentQueue<string> Watch(Room<Counter> room)
     {
         ConcurrentQueue<string> seen = new();
-        room.OnSnapshot((view, _) => seen.Enqueue("S" + view.Value));
+        room.OnSnapshot((view, _) => seen.Enqueue(view is null ? "S-" : "S" + view.Value));
         room.On<Counter>("changed", (data, meta) => seen.Enqueue($"E{data.Value}#{meta.Seq}"));
         return seen;
     }
@@ -410,6 +411,70 @@ public sealed class ClientProtocolTests : IAsyncLifetime
         await _gateway.Reply(client.ClientId, second.CommandId, d: "5");
         Assert.Equal(5, await adding.WaitAsync(s_patience));
         Assert.Equal(["S0", "S0"], seen);
+    }
+
+    [Fact]
+    public async Task A_command_waits_while_the_join_it_needs_cannot_be_done_yet_and_goes_out_once_the_room_is_back()
+    {
+        GrainWireClient client = await Connect();
+        Room<Counter> room = await Join(client);
+        ConcurrentQueue<string> seen = Watch(room);
+
+        Task<int> adding = room.RequestAsync<int>("add", new { Amount = 5 });
+        Published first = await _gateway.Next("cmd/add");
+        await _gateway.Reply(client.ClientId, first.CommandId, "error", "not-joined");
+
+        // The join the command needs fails for a passing reason, twice.
+        Published rejoin = await _gateway.Next("sys/join");
+        await _gateway.Reply(client.ClientId, rejoin.CommandId, status: "error", code: "unavailable");
+        Published again = await _gateway.Next("sys/join");
+        await _gateway.Reply(client.ClientId, again.CommandId, status: "error", code: "unavailable");
+
+        // The room keeps trying, a little later each time, and the command is not sent to a room that is not joined.
+        Published last = await _gateway.Next("sys/join");
+        Assert.Equal(1, _gateway.All().Count(published => published.Topic.EndsWith("/cmd/add", StringComparison.Ordinal)));
+        Assert.False(adding.IsCompleted);
+        await _gateway.Snapshot(client.ClientId, at: 0, value: 0);
+        await _gateway.Reply(client.ClientId, last.CommandId, code: "joined");
+
+        // Back in the room: the command goes out again under its original id.
+        Published second = await _gateway.Next("cmd/add");
+        Assert.Equal(first.CommandId, second.CommandId);
+        await _gateway.Reply(client.ClientId, second.CommandId, d: "5");
+        Assert.Equal(5, await adding.WaitAsync(s_patience));
+        Assert.Equal(["S0", "S0"], seen);
+        Assert.Equal(4, Joins());
+    }
+
+    [Fact]
+    public async Task A_snapshot_without_a_view_reaches_the_app_as_null()
+    {
+        GrainWireClient client = await Connect();
+        Room<Counter> room = await Join(client, at: 0, value: 7);
+        ConcurrentQueue<string> seen = Watch(room);
+        Assert.Equal(7, room.View?.Value);
+
+        // The room's GetSnapshot returned nothing this time, so the snapshot carries no "d".
+        JsonObject you = new() { ["player"] = "alice", ["role"] = "owner", ["status"] = "online" };
+        await _gateway.Send(client.ClientId, new JsonObject
+        {
+            ["t"] = "$snapshot",
+            ["room"] = ScriptedGateway.Room,
+            ["ri"] = "i1",
+            ["se"] = "e2",
+            ["at"] = 3,
+            ["members"] = new JsonArray(you.DeepClone()),
+            ["you"] = you,
+        });
+        await Until(() => seen.Count == 2, "the snapshot without a view");
+        Assert.Equal(["S7", "S-"], seen);
+        Assert.Null(room.View);
+
+        // A handler added now gets the same, and the stream goes on.
+        ConcurrentQueue<string> late = Watch(room);
+        await _gateway.Event(client.ClientId, seq: 4, value: 4, se: "e2");
+        await Until(() => late.Count == 2, "the replayed snapshot and the next event");
+        Assert.Equal(["S-", "E4#4"], late);
     }
 
     [Fact]
