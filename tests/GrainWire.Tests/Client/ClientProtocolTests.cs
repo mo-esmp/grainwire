@@ -495,6 +495,45 @@ public sealed class ClientProtocolTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_command_is_not_sent_again_by_its_retry_timer_while_its_room_is_still_waiting_to_join()
+    {
+        TimeSpan retryInterval = TimeSpan.FromMilliseconds(200);
+        GrainWireClient client = await Connect(options =>
+        {
+            options.RetryInterval = retryInterval;
+            options.ReconnectDelay = TimeSpan.FromMilliseconds(100);
+            options.MaxReconnectDelay = TimeSpan.FromMilliseconds(400);
+        });
+        Room<Counter> room = await Join(client);
+
+        Task<int> adding = room.RequestAsync<int>("add", new { Amount = 5 });
+        Published first = await _gateway.Next("cmd/add");
+        Stopwatch sinceSent = Stopwatch.StartNew();
+        await _gateway.Reply(client.ClientId, first.CommandId, "error", "not-joined");
+
+        // The join keeps failing for longer than the retry timer of the command (0.2 s): the room waits about 0.1 s,
+        // 0.2 s and then 0.4 s between its attempts.
+        for (int attempt = 2; attempt <= 4; attempt++)
+        {
+            Published failing = await _gateway.Next("sys/join");
+            await _gateway.Reply(client.ClientId, failing.CommandId, status: "error", code: "unavailable");
+        }
+
+        Published last = await _gateway.Next("sys/join");
+        Assert.True(sinceSent.Elapsed > retryInterval * 2, $"The retry timer had no turn yet: only {sinceSent.Elapsed} went by.");
+        Assert.Equal(1, _gateway.All().Count(published => published.Topic.EndsWith("/cmd/add", StringComparison.Ordinal)));
+        Assert.False(adding.IsCompleted);
+
+        // Back in the room: now it goes out, under its original id.
+        await _gateway.Snapshot(client.ClientId, at: 0, value: 0);
+        await _gateway.Reply(client.ClientId, last.CommandId, code: "joined");
+        Published second = await _gateway.Next("cmd/add");
+        Assert.Equal(first.CommandId, second.CommandId);
+        await _gateway.Reply(client.ClientId, second.CommandId, d: "5");
+        Assert.Equal(5, await adding.WaitAsync(s_patience));
+    }
+
+    [Fact]
     public async Task A_snapshot_without_a_view_reaches_the_app_as_null()
     {
         GrainWireClient client = await Connect();
@@ -565,6 +604,32 @@ public sealed class ClientProtocolTests : IAsyncLifetime
         await _gateway.Event(client.ClientId, seq: 2, value: 2);
         await Until(() => seen.Count == 3, "the next event");
         Assert.Equal(["S0", "S1", "E2#2"], seen);
+    }
+
+    [Fact]
+    public async Task After_a_reconnect_a_command_waits_for_a_room_that_could_not_be_joined_again_yet()
+    {
+        GrainWireClient client = await Connect();
+        Room<Counter> room = await Join(client);
+
+        Task<int> adding = room.RequestAsync<int>("add", new { Amount = 5 });
+        Published first = await _gateway.Next("cmd/add");
+        await _gateway.Disconnect(client.ClientId);
+
+        // The join after the reconnect fails for a passing reason: the room is not joined, so the command stays back.
+        Published failing = await _gateway.Next("sys/join");
+        await _gateway.Reply(client.ClientId, failing.CommandId, status: "error", code: "unavailable");
+
+        // The room tries again, and takes its command with it.
+        Published rejoin = await _gateway.Next("sys/join");
+        Assert.Equal(1, _gateway.All().Count(published => published.Topic.EndsWith("/cmd/add", StringComparison.Ordinal)));
+        Assert.False(adding.IsCompleted);
+        await _gateway.Snapshot(client.ClientId, at: 0, value: 0);
+        await _gateway.Reply(client.ClientId, rejoin.CommandId, code: "joined");
+        Published second = await _gateway.Next("cmd/add");
+        Assert.Equal(first.CommandId, second.CommandId);
+        await _gateway.Reply(client.ClientId, second.CommandId, d: "5");
+        Assert.Equal(5, await adding.WaitAsync(s_patience));
     }
 
     [Fact]

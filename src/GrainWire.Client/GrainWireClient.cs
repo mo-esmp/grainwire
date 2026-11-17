@@ -548,7 +548,10 @@ public sealed class GrainWireClient : IAsyncDisposable
         }
     }
 
-    /// <summary>After a (re)connect: join every room again, then re-send what has no reply yet, with the original command ids.</summary>
+    /// <summary>
+    /// After a (re)connect: join every room again, then re-send what has no reply yet, with the original command ids. A
+    /// room that could not be joined yet keeps its commands until it is back.
+    /// </summary>
     private void ResumeLocked()
     {
         Room[] rooms = [.. _rooms.Values.Where(room => room.NeedsRejoinLocked)];
@@ -573,7 +576,7 @@ public sealed class GrainWireClient : IAsyncDisposable
 
     /// <summary>
     /// Sends the commands that still wait for a reply again, under their original command ids: all of them, or only
-    /// those of one room.
+    /// those of one room. Commands of a room that is not joined at the moment stay back (see WaitsForRoomLocked).
     /// </summary>
     internal void ResendCommandsLocked(string? roomKey = null)
     {
@@ -584,12 +587,20 @@ public sealed class GrainWireClient : IAsyncDisposable
 
         foreach (PendingRequest pending in _pending.Values.ToArray())
         {
-            if (pending.Kind == RequestKind.Command && (roomKey is null || pending.RoomKey == roomKey))
+            if (pending.Kind == RequestKind.Command && (roomKey is null || pending.RoomKey == roomKey) && !WaitsForRoomLocked(pending))
             {
                 PublishLocked(pending);
             }
         }
     }
+
+    /// <summary>
+    /// True for a command whose room is not joined on the server just now, as far as the client knows. Sending it would
+    /// only bring back "not-joined"; the room sends it once it is back. A command of a room that has closed has no room
+    /// to wait for and is sent, so that its own reply can still arrive.
+    /// </summary>
+    private bool WaitsForRoomLocked(PendingRequest pending) =>
+        pending.Kind == RequestKind.Command && _rooms.TryGetValue(pending.RoomKey, out Room? room) && !room.IsAttachedLocked;
 
     private void SetStateLocked(ConnectionState state)
     {
@@ -756,7 +767,7 @@ public sealed class GrainWireClient : IAsyncDisposable
             {
                 SettleLocked(pending, null, new OutcomeUnknownException(pending.CommandId));
             }
-            else if (_state == ConnectionState.Connected && now - pending.LastSentAt >= retryAfter)
+            else if (_state == ConnectionState.Connected && now - pending.LastSentAt >= retryAfter && !WaitsForRoomLocked(pending))
             {
                 PublishLocked(pending);
             }
