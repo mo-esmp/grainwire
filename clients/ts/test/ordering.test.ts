@@ -131,8 +131,9 @@ describe("OrderingEngine", () => {
     // An event of e2 shows that something is wrong. The server answers the sync with e2's snapshot and "resynced".
     expect(engine.receiveEvent(event(6, "e2"), 20)).toEqual([]);
     expect(seqs(engine.tick(300))).toEqual(["sync"]);
+    const asked = engine.snapshotsReceived;
     expect(engine.receiveSnapshot(snapshot(5, "e2"), 320)).toEqual([]);
-    expect(seqs(engine.confirmResynced(300, 321))).toEqual(["S5", 6]);
+    expect(seqs(engine.confirmResynced(asked, 321))).toEqual(["S5", 6]);
     expect(engine.current).toEqual({ ri: "i1", se: "e2", seq: 6 });
 
     // Now e1 is the stream that was left.
@@ -145,14 +146,15 @@ describe("OrderingEngine", () => {
     engine.receiveSnapshot(snapshot(0), 0);
     engine.receiveSnapshot(snapshot(0, "e2"), 10);
 
-    // Refused before the sync was sent: it cannot be the answer.
+    // Refused before the sync was sent: it cannot be the answer, even when no time passed in between.
     expect(engine.receiveSnapshot(snapshot(0), 20)).toEqual([]);
-    expect(engine.confirmResynced(100, 110)).toEqual([]);
+    expect(engine.confirmResynced(engine.snapshotsReceived, 20)).toEqual([]);
 
     // The answer was a snapshot of the stream the client follows; a late one of the old stream came right after it.
+    const asked = engine.snapshotsReceived;
     expect(seqs(engine.receiveSnapshot(snapshot(3, "e2"), 220))).toEqual(["S3"]);
     expect(engine.receiveSnapshot(snapshot(0), 225)).toEqual([]);
-    expect(engine.confirmResynced(200, 230)).toEqual([]);
+    expect(engine.confirmResynced(asked, 230)).toEqual([]);
     expect(engine.current).toEqual({ ri: "i1", se: "e2", seq: 3 });
   });
 
@@ -200,7 +202,10 @@ describe("OrderingEngine", () => {
 
 // ---------------------------------------------------------------- randomized network behaviour
 
-type Packet = { kind: "event"; event: EventEnvelope } | { kind: "snapshot"; snapshot: SnapshotEnvelope } | { kind: "resynced"; id: number; askedAt: number };
+type Packet =
+  | { kind: "event"; event: EventEnvelope }
+  | { kind: "snapshot"; snapshot: SnapshotEnvelope }
+  | { kind: "resynced"; id: number; askedAt: number; snapshotsBefore: number };
 
 interface Step {
   /** 0 = the room restarts, otherwise an event. */
@@ -248,7 +253,7 @@ function simulate(steps: Step[]): {
     const answer: Packet = { kind: "snapshot", snapshot: snapshot(position, `e${epoch}`) };
     const delay = reliable ? 1 : current.duplicate ? 30 : 30 + current.late;
     inFlight.push({ at: now + delay, packet: answer });
-    inFlight.push({ at: now + delay, packet: { kind: "resynced", id: ++syncs, askedAt: now } });
+    inFlight.push({ at: now + delay, packet: { kind: "resynced", id: ++syncs, askedAt: now, snapshotsBefore: engine.snapshotsReceived } });
     if (!reliable && current.duplicate) inFlight.push({ at: now + delay + 7 + current.late, packet: answer });
   };
 
@@ -265,7 +270,7 @@ function simulate(steps: Step[]): {
     if (packet.kind === "snapshot") return engine.receiveSnapshot(packet.snapshot, now);
 
     // Like the client, the simulation waits for one answer at a time, and not for longer than five seconds.
-    return packet.id === syncs && now - packet.askedAt < 5_000 ? engine.confirmResynced(packet.askedAt, now) : [];
+    return packet.id === syncs && now - packet.askedAt < 5_000 ? engine.confirmResynced(packet.snapshotsBefore, now) : [];
   };
 
   const advance = (to: number, reliable: boolean): void => {

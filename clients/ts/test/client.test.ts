@@ -140,9 +140,8 @@ describe("a room whose server restarted", () => {
     const { room } = await joined(snapshotAt(4, 4, "e2"));
     const seen = watch(room);
     await deliver(snapshotAt(7, 70, "e1"));
-    await vi.advanceTimersByTimeAsync(50);
 
-    // The server answers a sync with the snapshot of e2, the epoch that is current, and the room follows it again.
+    // The server answers a sync, sent in the same millisecond, with the snapshot of e2, the epoch that is current, and the room follows it again.
     const syncing = room.sync();
     const sync = await untilSent("sys/sync", 1);
     await deliver(snapshotAt(5, 5, "e2"));

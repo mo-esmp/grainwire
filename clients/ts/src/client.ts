@@ -726,12 +726,12 @@ export class Room<TView = unknown> {
     if (this.syncing || this.closed || !this.attached) return;
     this.syncing = true;
     try {
-      const askedAt = Date.now();
+      const snapshotsBefore = this.engine.snapshotsReceived;
       const position = this.engine.current;
       const reply = await this.client.request("sync", this.key, "sys/sync", { ri: position.ri, se: position.se, seq: this.engine.ready ? position.seq : -1 }, 5_000);
       if (reply.status === "ok") {
         if (reply.code === "in-sync") this.engine.confirmInSync(Date.now());
-        else if (reply.code === "resynced") this.apply(this.engine.confirmResynced(askedAt, Date.now()));
+        else if (reply.code === "resynced") this.apply(this.engine.confirmResynced(snapshotsBefore, Date.now()));
       } else if (reply.code === "room-not-found") {
         this._close("lost", undefined, true);
       } else if (reply.code === "not-member") {

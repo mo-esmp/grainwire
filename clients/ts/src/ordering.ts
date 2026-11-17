@@ -37,8 +37,9 @@ export interface StreamPosition {
 export class OrderingEngine {
   private static readonly maxRetired = 16;
   private retired: { ri: string; se: string }[] = [];
-  private refused: { snapshot: SnapshotEnvelope; at: number } | undefined;
-  private acceptedAt: number | undefined;
+  private refused: SnapshotEnvelope | undefined;
+  private received = 0;
+  private lastAccepted = 0;
   private ri: string | undefined;
   private se: string | undefined;
   private position = 0;
@@ -64,6 +65,15 @@ export class OrderingEngine {
     return this.hasBaseline;
   }
 
+  /**
+   * How many snapshots have arrived so far, whatever became of them. Read it when a sync is sent and pass it to
+   * `confirmResynced`: it tells what arrived before the question from what arrived after it, which a clock cannot do
+   * for two things that happen within one of its ticks.
+   */
+  get snapshotsReceived(): number {
+    return this.received;
+  }
+
   /** Call when a snapshot should have arrived (after a successful join) but may have been lost. */
   expectBaseline(now: number): void {
     if (!this.hasBaseline) this.waitingSince ??= now;
@@ -71,6 +81,7 @@ export class OrderingEngine {
 
   receiveSnapshot(snapshot: SnapshotEnvelope, now: number): OrderingAction[] {
     this.lastActivityAt = now;
+    this.received++;
     this.refused = undefined;
     if (this.hasBaseline) {
       if (snapshot.ri === this.ri && snapshot.se === this.se) {
@@ -80,7 +91,7 @@ export class OrderingEngine {
         // A stream the client has left does not come back, so this snapshot was on its way for a long time. Following
         // it would show the app an old state, and events it already has a second time. It is kept for the one case in
         // which the server says otherwise (see confirmResynced).
-        this.refused = { snapshot, at: now };
+        this.refused = snapshot;
         return [];
       }
     }
@@ -129,14 +140,14 @@ export class OrderingEngine {
    * The server answered a sync with "resynced": just before, it sent a snapshot of the stream that is current. If that
    * snapshot was refused because it belongs to a stream the client had left, the client was wrong about which of the
    * two streams is over (it had followed a late snapshot of an epoch it had never seen), and the snapshot is applied
-   * after all. `askedAt` is when the sync was sent.
+   * after all. `snapshotsReceivedBefore` is what `snapshotsReceived` was when the sync was sent.
    */
-  confirmResynced(askedAt: number, now: number): OrderingAction[] {
-    // Only the last snapshot to arrive can be the answer, and only if it came after the question. When a snapshot was
-    // applied since the sync was sent, that one was the answer.
+  confirmResynced(snapshotsReceivedBefore: number, now: number): OrderingAction[] {
+    // Only the last snapshot to arrive can be the answer (a refused one is forgotten when the next arrives), and only
+    // if it came after the question. When a snapshot was applied since the sync was sent, that one was the answer.
     const refused = this.refused;
-    if (!refused || refused.at < askedAt || (this.acceptedAt !== undefined && this.acceptedAt >= askedAt)) return [];
-    return this.accept(refused.snapshot, now);
+    if (!refused || this.received <= snapshotsReceivedBefore || this.lastAccepted > snapshotsReceivedBefore) return [];
+    return this.accept(refused, now);
   }
 
   /** Call regularly. Returns a sync action when the client should check itself against the server. */
@@ -158,7 +169,7 @@ export class OrderingEngine {
 
     this.retired = this.retired.filter((left) => left.ri !== snapshot.ri || left.se !== snapshot.se);
     this.refused = undefined;
-    this.acceptedAt = now;
+    this.lastAccepted = this.received;
     this.ri = snapshot.ri;
     this.se = snapshot.se;
     this.position = snapshot.at;
