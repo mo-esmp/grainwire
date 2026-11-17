@@ -13,6 +13,7 @@
     <PackageReference Include="Microsoft.Orleans.TestingHost" />
     <PackageReference Include="MQTTnet" />
     <ProjectReference Include="../../src/GrainWire.Abstractions/GrainWire.Abstractions.csproj" />
+    <ProjectReference Include="../../src/GrainWire.Client/GrainWire.Client.csproj" />
     <ProjectReference Include="../../src/GrainWire.Server/GrainWire.Server.csproj" />
     <ProjectReference Include="../../samples/Chess/Server/Chess.Server.csproj" />
     <Using Include="Xunit" />

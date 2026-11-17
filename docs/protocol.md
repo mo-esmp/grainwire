@@ -1,10 +1,10 @@
 # GrainWire wire protocol (v1)
 
-This is the contract between a client and a GrainWire gateway. The TypeScript client implements
-it; a .NET client or any third-party client can be built from this document alone.
+This is the contract between a client and a GrainWire gateway. The TypeScript and .NET clients
+implement it; a third-party client can be built from this document alone.
 
-Example messages live in [`protocol-golden/`](protocol-golden/). Both the server tests and the
-TypeScript client tests read those files, so they cannot drift from this document unnoticed.
+Example messages live in [`protocol-golden/`](protocol-golden/). The server tests and the tests
+of both clients read those files, so they cannot drift from this document unnoticed.
 
 ## 1. Transport and session
 

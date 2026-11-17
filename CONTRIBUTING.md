@@ -8,8 +8,9 @@ Thanks for your interest in GrainWire. Issues and pull requests are welcome.
 |---|---|
 | `src/GrainWire.Abstractions` | Contracts, `RoomGrain<TState>` (the room pipeline), silo registration |
 | `src/GrainWire.Server` | The MQTT gateway |
+| `src/GrainWire.Client` | `GrainWire.Client`, the .NET client |
 | `clients/ts` | `@grainwire/client`, the browser client |
-| `tests/GrainWire.Tests` | .NET tests: room pipeline, persistence, wire format, gateway, failover |
+| `tests/GrainWire.Tests` | .NET tests: room pipeline, persistence, wire format, gateway, failover, the .NET client |
 | `tests/GrainWire.TestHost` | A server with fault injection, used by the TypeScript tests |
 | `samples/Chess` | The chess sample and its browser test |
 | `bench/GrainWire.Bench` | The benchmark |

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>GrainWire.Client</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>GrainWire client for .NET: join rooms on a GrainWire gateway over MQTT 5 and WebSockets. Ordered events, catching up by snapshot, reconnecting with back-off, and safe request retries.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="MQTTnet" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <InternalsVisibleTo Include="GrainWire.Tests" />
+  </ItemGroup>
+</Project>
