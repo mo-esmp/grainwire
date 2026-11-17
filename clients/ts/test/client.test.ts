@@ -254,4 +254,82 @@ describe("a command answered with not-joined", () => {
     expect(await subtracting).toBe(4);
     expect(sent("sys/join").length).toBe(3);
   });
+
+  it("is not sent again by its retry timer while the room is still waiting to join", async () => {
+    const opened = await joined();
+
+    const adding = opened.room.request<number>("add", { amount: 5 });
+    void adding.catch(() => undefined);
+    const first = await untilSent("cmd/add", 1);
+    await reply(first, { status: "error", code: "not-joined" });
+
+    // The join keeps failing for longer than the retry timer of the command (3 s): 0.5 s, 1 s, 2 s, then 4 s.
+    for (let attempt = 2; attempt <= 5; attempt++) {
+      await reply(await untilSent("sys/join", attempt), { status: "error", code: "unavailable" });
+    }
+
+    const last = await untilSent("sys/join", 6);
+    expect(last.at - first.at).toBeGreaterThan(3_000);
+    expect(sent("cmd/add").length).toBe(1);
+
+    // Back in the room: now it goes out, under its original id.
+    await deliver(snapshot);
+    await reply(last, { status: "ok", code: "joined" });
+    expect(sent("cmd/add").length).toBe(2);
+    expect(sent("cmd/add")[1]!.cmd).toBe(first.cmd);
+    await reply(sent("cmd/add")[1]!, { status: "ok", d: 5 });
+    expect(await adding).toBe(5);
+  });
+});
+
+describe("a command that waits for its reply across a reconnect", () => {
+  /** The connection drops and comes back; the client then joins its rooms again. */
+  async function reconnected(): Promise<void> {
+    gateway.handlers.get("close")?.();
+    await vi.advanceTimersByTimeAsync(1_000);
+    gateway.handlers.get("connect")?.({ properties: { userProperties: { "gw-player": "alice" } } });
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  it("goes out again once its room is joined again", async () => {
+    const opened = await joined();
+
+    const adding = opened.room.request<number>("add", { amount: 5 });
+    void adding.catch(() => undefined);
+    const first = await untilSent("cmd/add", 1);
+
+    await reconnected();
+    const rejoin = await untilSent("sys/join", 2);
+    expect(sent("cmd/add").length).toBe(1);
+    await deliver(snapshot);
+    await reply(rejoin, { status: "ok", code: "joined" });
+
+    expect(sent("cmd/add").length).toBe(2);
+    expect(sent("cmd/add")[1]!.cmd).toBe(first.cmd);
+    await reply(sent("cmd/add")[1]!, { status: "ok", d: 5 });
+    expect(await adding).toBe(5);
+  });
+
+  it("waits for a room that could not be joined again yet", async () => {
+    const opened = await joined();
+
+    const adding = opened.room.request<number>("add", { amount: 5 });
+    void adding.catch(() => undefined);
+    const first = await untilSent("cmd/add", 1);
+
+    // The join after the reconnect fails for a passing reason: the room is not joined, so the command stays back.
+    await reconnected();
+    await reply(await untilSent("sys/join", 2), { status: "error", code: "unavailable" });
+    expect(sent("cmd/add").length).toBe(1);
+
+    // The room tries again, and takes its command with it.
+    const rejoin = await untilSent("sys/join", 3);
+    expect(sent("cmd/add").length).toBe(1);
+    await deliver(snapshot);
+    await reply(rejoin, { status: "ok", code: "joined" });
+    expect(sent("cmd/add").length).toBe(2);
+    expect(sent("cmd/add")[1]!.cmd).toBe(first.cmd);
+    await reply(sent("cmd/add")[1]!, { status: "ok", d: 5 });
+    expect(await adding).toBe(5);
+  });
 });

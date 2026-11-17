@@ -253,13 +253,25 @@ export class GrainWireClient {
 
   /**
    * @internal Sends the commands that still wait for a reply again, under their original command ids: all of them, or
-   * only those of one room.
+   * only those of one room. Commands of a room that is not joined at the moment stay back (see waitsForRoom).
    */
   _resendCommands(roomKey?: string): void {
     if (this._state !== "connected") return;
     for (const pending of this.pending.values()) {
-      if (pending.kind === "command" && (roomKey === undefined || pending.roomKey === roomKey)) this.publish(pending);
+      if (pending.kind !== "command" || (roomKey !== undefined && pending.roomKey !== roomKey)) continue;
+      if (!this.waitsForRoom(pending)) this.publish(pending);
     }
+  }
+
+  /**
+   * True for a command whose room is not joined on the server just now, as far as the client knows. Sending it would
+   * only bring back "not-joined"; the room sends it once it is back. A command of a room that has closed has no room
+   * to wait for and is sent, so that its own reply can still arrive.
+   */
+  private waitsForRoom(pending: Pending): boolean {
+    if (pending.kind !== "command") return false;
+    const room = this.rooms.get(pending.roomKey);
+    return room !== undefined && !room._attached;
   }
 
   // ---------------------------------------------------------------- connection
@@ -359,7 +371,10 @@ export class GrainWireClient {
     return typeof token === "function" ? await token() : token;
   }
 
-  /** After a reconnect: join every room again, then re-send what has no reply yet, with the original command ids. */
+  /**
+   * After a reconnect: join every room again, then re-send what has no reply yet, with the original command ids. A
+   * room that could not be joined yet keeps its commands until it is back.
+   */
   private async resume(): Promise<void> {
     const rooms = [...this.rooms.values()].filter((room) => room._needsRejoin);
     await Promise.allSettled(rooms.map((room) => room._rejoin()));
@@ -435,7 +450,7 @@ export class GrainWireClient {
   private tick(now: number): void {
     for (const pending of [...this.pending.values()]) {
       if (now >= pending.deadline) this.settle(pending, undefined, new OutcomeUnknownError(pending.cmd));
-      else if (this._state === "connected" && now - pending.lastSentAt >= this.settings.retryIntervalMs) this.publish(pending);
+      else if (this._state === "connected" && now - pending.lastSentAt >= this.settings.retryIntervalMs && !this.waitsForRoom(pending)) this.publish(pending);
     }
 
     if (this._state !== "connected") return;
