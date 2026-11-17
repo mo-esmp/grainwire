@@ -56,6 +56,15 @@ public sealed class GrainWireClientOptions
     public Action<MqttClientOptionsBuilder>? ConfigureMqtt { get; set; }
 
     /// <summary>
+    /// How many handler calls may wait for the app. Handlers run one at a time, so calls queue up when messages arrive
+    /// faster than the handlers return. Once this many wait, a room stops queueing calls for its events: it skips
+    /// ahead. When the app has caught up, the room asks the server for a snapshot and carries on from there, as it does
+    /// after a reconnect: the snapshot handler is called with the state as it is now, and the events in between are
+    /// not delivered. Defaults to 1,000.
+    /// </summary>
+    public int MaxPendingHandlerCalls { get; set; } = 1000;
+
+    /// <summary>
     /// Called when one of the app's handlers throws. The client carries on with the next handler. Without this, such
     /// exceptions are ignored.
     /// </summary>
@@ -84,6 +93,7 @@ public sealed class GrainWireClientOptions
         Positive(copy.RetryInterval, nameof(RetryInterval));
         Positive(copy.ReconnectDelay, nameof(ReconnectDelay));
         Positive(copy.ConnectTimeout, nameof(ConnectTimeout));
+        ArgumentOutOfRangeException.ThrowIfLessThan(copy.MaxPendingHandlerCalls, 1, nameof(MaxPendingHandlerCalls));
         if (copy.MaxReconnectDelay < copy.ReconnectDelay)
         {
             throw new ArgumentOutOfRangeException(nameof(MaxReconnectDelay), "Must not be shorter than ReconnectDelay.");

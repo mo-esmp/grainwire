@@ -39,7 +39,7 @@ public sealed class Room<TView> : Room
 
     /// <summary>
     /// Calls <paramref name="handler"/> with every snapshot: after joining, after a reconnect, and whenever the room had
-    /// to catch up. If the room already has a snapshot, the handler is called with it right away. Treat a snapshot as
+    /// to catch up. If the room already has a snapshot, the handler is called with it first. Treat a snapshot as
     /// "this is the state now": it carries the effects of events that may never have been delivered. The view is null
     /// (the default of <typeparamref name="TView"/>) when the room's <c>GetSnapshot</c> returns nothing.
     /// </summary>
@@ -57,7 +57,6 @@ public sealed class Room<TView> : Room
             }
         }
 
-        Client.Callbacks.Drain();
         return new Subscription(() =>
         {
             lock (Client.Gate)
@@ -75,6 +74,11 @@ public sealed class Room<TView> : Room
         JsonSerializerOptions json = Client.Options.SerializerOptions!;
         Lazy<TView?> view = new(() => Payloads.Deserialize<TView>(data, json));
         _view = view;
+        if (!CanCallSnapshotHandlersLocked(_snapshotHandlers.Length))
+        {
+            return;
+        }
+
         foreach (Action<TView?, SnapshotInfo> handler in _snapshotHandlers)
         {
             Client.Callbacks.Enqueue(() => handler(view.Value, info));

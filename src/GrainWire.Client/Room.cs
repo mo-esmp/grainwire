@@ -10,11 +10,13 @@ namespace GrainWire.Client;
 /// room catches up through a fresh snapshot. See <see cref="Room{TView}"/> for the view.
 /// </summary>
 /// <remarks>
-/// Handlers are called one at a time, in order, on a thread-pool thread. A handler may call back into the room, but
-/// must not block waiting for a request: the reply cannot be processed until the handler returns.
+/// Handlers are called one at a time, in order, on a thread-pool thread, and may call back into the room. A handler
+/// that takes long holds up the calls after it. When too many wait (<see cref="GrainWireClientOptions.MaxPendingHandlerCalls"/>),
+/// the room skips ahead: it calls no handlers until the app has caught up, and then carries on from a fresh snapshot.
 /// </remarks>
 public abstract class Room
 {
+    private const long SnapshotRetryMs = 2_000;
     private static readonly TimeSpan s_housekeepingTimeout = TimeSpan.FromSeconds(5);
 
     // Everything below is guarded by the client's lock. Methods named ...Locked expect the caller to hold it.
@@ -35,6 +37,10 @@ public abstract class Room
     private bool _syncing;
     private TimeSpan _rejoinDelay;
     private long? _nextRejoinAt;
+
+    // True while the app's handlers are too far behind for this room's calls to be queued (see CanCallHandlersLocked).
+    private bool _skipping;
+    private long? _snapshotAskedAt;
 
     private protected Room(GrainWireClient client, string type, string id, byte[]? joinData)
     {
@@ -248,7 +254,6 @@ public abstract class Room
             RunSyncLocked(() => done.TrySetResult());
         }
 
-        Client.Callbacks.Drain();
         await done.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -271,7 +276,6 @@ public abstract class Room
             }
         }
 
-        Client.Callbacks.Drain();
         await done.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -279,8 +283,6 @@ public abstract class Room
 
     /// <summary>True once the server has accepted a join, also while the first snapshot is still on its way.</summary>
     internal bool NeedsRejoinLocked => _closedReason is null && !_attached && _joinedOnce;
-
-    internal bool JoinedOnceLocked => _joinedOnce;
 
     /// <summary>True while the gateway of the current connection knows this connection is in the room.</summary>
     internal bool IsAttachedLocked => _attached;
@@ -482,10 +484,24 @@ public abstract class Room
             return;
         }
 
+        // The app has caught up with what was queued: get the state as it is now, and carry on from there.
+        if (_skipping && !_syncing && Client.Callbacks.HasCaughtUp && (_snapshotAskedAt is not { } askedAt || now - askedAt >= SnapshotRetryMs))
+        {
+            _snapshotAskedAt = now;
+            RunSyncLocked(null, fresh: true);
+        }
+
         if (_engine.Tick(now).Count > 0)
         {
             RunSyncLocked(null);
         }
+    }
+
+    /// <summary>Whether the handler calls of a snapshot may be queued. A snapshot is where a room that was skipping carries on.</summary>
+    private protected bool CanCallSnapshotHandlersLocked(int calls)
+    {
+        _skipping = !Client.Callbacks.HasRoom(Math.Max(calls, 1));
+        return !_skipping;
     }
 
     internal void CloseLocked(RoomClosedReason reason, string? message, bool notify)
@@ -541,14 +557,38 @@ public abstract class Room
             })!;
         }
 
-        Client.Callbacks.Drain();
         using (cancellationToken.Register(() => Client.Abandon(pending, new OperationCanceledException(cancellationToken))))
         {
             return await completion.Task.ConfigureAwait(false);
         }
     }
 
-    private void RunSyncLocked(Action? done)
+    /// <summary>
+    /// Whether the handler calls of one event may be queued. When the app's handlers are so far behind that they may
+    /// not, the room starts skipping: it keeps following its stream, so <see cref="Members"/>, <see cref="You"/> and
+    /// the view stay current, but calls no handlers until a snapshot can be handed to the app
+    /// (<see cref="CanCallSnapshotHandlersLocked"/>). What the app sees is what it sees after a reconnect: events, then
+    /// a snapshot that carries the effects of the events it missed, then the events after it.
+    /// </summary>
+    private bool CanCallHandlersLocked(int calls)
+    {
+        if (_skipping)
+        {
+            return false;
+        }
+
+        if (calls == 0 || Client.Callbacks.HasRoom(calls))
+        {
+            return true;
+        }
+
+        _skipping = true;
+        return false;
+    }
+
+    /// <param name="done">Called when the sync is over, whatever its outcome.</param>
+    /// <param name="fresh">Ask for a snapshot even when the client has every event.</param>
+    private void RunSyncLocked(Action? done, bool fresh = false)
     {
         if (_closedReason is not null || !_attached)
         {
@@ -567,8 +607,9 @@ public abstract class Room
         }
 
         _syncing = true;
+        long snapshotsBefore = _engine.SnapshotsReceived;
         StreamPosition position = _engine.Current;
-        long seq = _engine.Ready ? position.Seq : -1;
+        long seq = _engine.Ready && !fresh ? position.Seq : -1;
         PendingRequest? pending = Client.RequestLocked(RequestKind.Sync, Key, Wire.Sync, commandId => ClientPayload.Sync(commandId, position.Incarnation, position.Epoch, seq), s_housekeepingTimeout, (reply, _) =>
         {
             if (reply is not null)
@@ -578,6 +619,10 @@ public abstract class Room
                     if (reply.Code == Wire.InSync)
                     {
                         _engine.ConfirmInSync(GrainWireClient.Now);
+                    }
+                    else if (reply.Code == Wire.Resynced)
+                    {
+                        ApplyLocked(_engine.ConfirmResynced(snapshotsBefore, GrainWireClient.Now));
                     }
                 }
                 else if (reply.Code == Wire.RoomNotFound)
@@ -687,9 +732,12 @@ public abstract class Room
                 _you = you with { Role = presence.Role, Status = presence.Status };
             }
 
-            foreach (Action<PresenceChange> handler in _presenceHandlers)
+            if (CanCallHandlersLocked(_presenceHandlers.Length))
             {
-                Client.Callbacks.Enqueue(() => handler(presence));
+                foreach (Action<PresenceChange> handler in _presenceHandlers)
+                {
+                    Client.Callbacks.Enqueue(() => handler(presence));
+                }
             }
 
             return;
@@ -703,12 +751,15 @@ public abstract class Room
         string name = @event.Type;
         JsonElement data = @event.Data;
         EventMeta meta = new(@event.Seq);
-        if (_eventHandlers.TryGetValue(name, out ImmutableArray<Action<JsonElement, EventMeta>> handlers))
+        ImmutableArray<Action<JsonElement, EventMeta>> handlers = _eventHandlers.GetValueOrDefault(name, []);
+        if (!CanCallHandlersLocked(handlers.Length + _anyHandlers.Length))
         {
-            foreach (Action<JsonElement, EventMeta> handler in handlers)
-            {
-                Client.Callbacks.Enqueue(() => handler(data, meta));
-            }
+            return;
+        }
+
+        foreach (Action<JsonElement, EventMeta> handler in handlers)
+        {
+            Client.Callbacks.Enqueue(() => handler(data, meta));
         }
 
         foreach (Action<string, JsonElement, EventMeta> handler in _anyHandlers)

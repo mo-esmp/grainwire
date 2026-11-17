@@ -45,7 +45,7 @@ public sealed class GrainWireClient : IAsyncDisposable
     {
         Options = options.Validated();
         ClientId = Options.ClientId!;
-        Callbacks = new CallbackQueue(Options.OnHandlerError);
+        Callbacks = new CallbackQueue(Options.MaxPendingHandlerCalls, Options.OnHandlerError);
         _reconnectDelay = Options.ReconnectDelay;
     }
 
@@ -171,7 +171,6 @@ public sealed class GrainWireClient : IAsyncDisposable
             }
         }
 
-        Callbacks.Drain();
         return As<TView>(await joining.WaitAsync(cancellationToken).ConfigureAwait(false));
     }
 
@@ -211,7 +210,6 @@ public sealed class GrainWireClient : IAsyncDisposable
         }
 
         await _shutdown.CancelAsync().ConfigureAwait(false);
-        Callbacks.Drain();
         await Task.WhenAll(ticker, reconnector).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         if (mqtt is not null)
         {
@@ -312,8 +310,6 @@ public sealed class GrainWireClient : IAsyncDisposable
         {
             SettleLocked(pending, null, reason);
         }
-
-        Callbacks.Drain();
     }
 
     // ---------------------------------------------------------------- joining
@@ -361,11 +357,12 @@ public sealed class GrainWireClient : IAsyncDisposable
     {
         Room room = operation.Room;
         _joining.Remove(room.Key);
-        bool joinedOnServer = room.JoinedOnceLocked && room.ClosedReasonLocked is null;
+        bool outcomeUnknown = error is OutcomeUnknownException && room.ClosedReasonLocked is null;
         room.CloseLocked(RoomClosedReason.Removed, null, notify: false);
 
-        // The server attached this connection but the client gave up: stop the room's events from coming here.
-        if (joinedOnServer)
+        // The server may have this connection in the room all the same: the reply was lost, or no snapshot followed
+        // it. Stop the room's events from coming here. A gateway that never saw the join answers "left" as well.
+        if (outcomeUnknown)
         {
             RequestLocked(RequestKind.Leave, room.Key, Wire.Leave, ClientPayload.Leave, s_housekeepingTimeout, static (_, _) => { });
         }
@@ -464,7 +461,6 @@ public sealed class GrainWireClient : IAsyncDisposable
                 ResumeLocked();
             }
 
-            Callbacks.Drain();
             previous?.Dispose();
         }
         catch
@@ -502,8 +498,6 @@ public sealed class GrainWireClient : IAsyncDisposable
             SetStateLocked(ConnectionState.Reconnecting);
             StartReconnectLocked();
         }
-
-        Callbacks.Drain();
     }
 
     private void StartReconnectLocked()
@@ -672,8 +666,6 @@ public sealed class GrainWireClient : IAsyncDisposable
                 room.ReceiveLocked(envelope, Now);
             }
         }
-
-        Callbacks.Drain();
     }
 
     private void ReceiveReplyLocked(ReplyEnvelope reply)
@@ -730,8 +722,6 @@ public sealed class GrainWireClient : IAsyncDisposable
                 {
                     TickLocked(Now);
                 }
-
-                Callbacks.Drain();
             }
         }
         catch (OperationCanceledException)

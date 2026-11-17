@@ -16,6 +16,7 @@ internal static partial class Wire
     public const string CommandPrefix = "cmd/";
 
     public const string InSync = "in-sync";
+    public const string Resynced = "resynced";
     public const string RoomNotFound = "room-not-found";
     public const string NotMember = "not-member";
     public const string NotJoined = "not-joined";

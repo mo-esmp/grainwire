@@ -270,6 +270,54 @@ public sealed class ClientProtocolTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_late_snapshot_of_an_epoch_the_room_has_left_does_not_reach_the_app()
+    {
+        GrainWireClient client = await Connect();
+        Room<Counter> room = await Join(client, at: 0, value: 0);
+        ConcurrentQueue<string> seen = Watch(room);
+        await _gateway.Event(client.ClientId, seq: 1, value: 1);
+
+        // The room restarted on the server, and the client follows the new epoch.
+        await _gateway.Snapshot(client.ClientId, at: 0, value: 10, se: "e2");
+        await _gateway.Event(client.ClientId, seq: 1, value: 11, se: "e2");
+        await Until(() => seen.Count == 4, "the new epoch");
+
+        // What was still on its way from the old epoch: its snapshot, and an event the app already has.
+        await _gateway.Snapshot(client.ClientId, at: 0, value: 0);
+        await _gateway.Event(client.ClientId, seq: 1, value: 1);
+        await _gateway.Event(client.ClientId, seq: 2, value: 12, se: "e2");
+        await Until(() => seen.Count == 5, "the next event of the new epoch");
+        Assert.Equal(["S0", "E1#1", "S10", "E11#1", "E12#2"], seen);
+        Assert.Equal(10, room.View!.Value);
+    }
+
+    [Fact]
+    public async Task A_room_that_followed_a_late_snapshot_of_an_older_epoch_returns_when_the_server_answers_its_sync()
+    {
+        // The client joins in epoch e2. A snapshot of e1, which it never saw, arrives late and looks like a restart.
+        GrainWireClient client = await Connect();
+        Task<Room<Counter>> joining = client.JoinAsync<Counter>("counter", "r1");
+        Published join = await _gateway.Next("sys/join");
+        await _gateway.Snapshot(client.ClientId, at: 4, value: 4, se: "e2");
+        await _gateway.Reply(client.ClientId, join.CommandId, code: "joined");
+        Room<Counter> room = await joining.WaitAsync(s_patience);
+        ConcurrentQueue<string> seen = Watch(room);
+        await _gateway.Snapshot(client.ClientId, at: 7, value: 70, se: "e1");
+        await Until(() => seen.Count == 2, "the late snapshot");
+
+        // The server answers a sync with the snapshot of e2, the epoch that is current, and the room follows it again.
+        Task syncing = room.SyncAsync();
+        Published sync = await _gateway.Next("sys/sync");
+        Assert.Equal("e1", sync.Body.GetProperty("se").GetString());
+        await _gateway.Snapshot(client.ClientId, at: 5, value: 5, se: "e2");
+        await _gateway.Reply(client.ClientId, sync.CommandId, code: "resynced");
+        await syncing.WaitAsync(s_patience);
+        await _gateway.Event(client.ClientId, seq: 6, value: 6, se: "e2");
+        await Until(() => seen.Count == 4, "the snapshot of the current epoch and its next event");
+        Assert.Equal(["S4", "S70", "S5", "E6#6"], seen);
+    }
+
+    [Fact]
     public async Task A_closure_notice_that_overtakes_the_reply_does_not_fail_the_command_that_closed_the_room()
     {
         GrainWireClient client = await Connect();
@@ -639,22 +687,50 @@ public sealed class ClientProtocolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task A_join_without_an_answer_fails_as_unknown_and_leaves_nothing_behind()
+    public async Task A_join_whose_outcome_is_unknown_tells_the_server_to_stop_sending()
     {
         GrainWireClient client = await Connect(options => options.RequestTimeout = TimeSpan.FromMilliseconds(500));
+
+        // Nothing comes back at all. The gateway may have this connection in the room all the same.
         Task<Room<Counter>> joining = client.JoinAsync<Counter>("counter", "r1");
         Task<Room<Counter>> same = client.JoinAsync<Counter>("counter", "r1");
         Published join = await _gateway.Next("sys/join");
         await Assert.ThrowsAsync<OutcomeUnknownException>(() => joining.WaitAsync(s_patience));
         await Assert.ThrowsAsync<OutcomeUnknownException>(() => same.WaitAsync(s_patience));
+        Published leave = await _gateway.Next("sys/leave");
+        Assert.Equal($$$"""{"cmd":"{{{leave.CommandId}}}"}""", leave.Body.GetRawText());
 
-        // Accepted by the server, but the snapshot never comes: the client gives up and tells the server to stop sending.
-        Task<Room<Counter>> again = client.JoinAsync<Counter>("counter", "r1");
-        Published second = await _gateway.Next("sys/join");
-        Assert.NotEqual(join.CommandId, second.CommandId);
-        await _gateway.Reply(client.ClientId, second.CommandId, code: "joined");
-        await Assert.ThrowsAsync<OutcomeUnknownException>(() => again.WaitAsync(s_patience));
+        // Accepted by the server and the snapshot arrives, but the reply is lost.
+        Task<Room<Counter>> second = client.JoinAsync<Counter>("counter", "r1");
+        Published secondJoin = await _gateway.Next("sys/join");
+        Assert.NotEqual(join.CommandId, secondJoin.CommandId);
+        await _gateway.Snapshot(client.ClientId, at: 0, value: 0);
+        await Assert.ThrowsAsync<OutcomeUnknownException>(() => second.WaitAsync(s_patience));
         await _gateway.Next("sys/leave");
+
+        // Accepted by the server, but the snapshot never comes.
+        Task<Room<Counter>> third = client.JoinAsync<Counter>("counter", "r1");
+        Published thirdJoin = await _gateway.Next("sys/join");
+        await _gateway.Reply(client.ClientId, thirdJoin.CommandId, code: "joined");
+        await Assert.ThrowsAsync<OutcomeUnknownException>(() => third.WaitAsync(s_patience));
+        await _gateway.Next("sys/leave");
+
+        // The client stays connected and holds no room: the next join starts from nothing.
+        Assert.Equal(ConnectionState.Connected, client.State);
+        Room<Counter> room = await Join(client, at: 3, value: 3);
+        Assert.Equal(3, room.View!.Value);
+    }
+
+    [Fact]
+    public async Task A_join_the_server_refused_sends_no_leave()
+    {
+        GrainWireClient client = await Connect();
+        Task<Room<Counter>> joining = client.JoinAsync<Counter>("counter", "r1");
+        Published join = await _gateway.Next("sys/join");
+        await _gateway.Reply(client.ClientId, join.CommandId, status: "rejected", code: "room-full");
+        await Assert.ThrowsAsync<RejectedException>(() => joining.WaitAsync(s_patience));
+        await Task.Delay(300);
+        Assert.DoesNotContain(_gateway.All(), published => published.Topic.EndsWith("/sys/leave", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -671,6 +747,121 @@ public sealed class ClientProtocolTests : IAsyncLifetime
         int sent = _gateway.All().Count;
         await Task.Delay(350);
         Assert.Equal(sent, _gateway.All().Count);
+    }
+
+    [Fact]
+    public async Task Calls_that_wait_for_a_blocked_handler_are_limited_and_the_room_carries_on_from_a_snapshot()
+    {
+        GrainWireClient client = await Connect(options => options.MaxPendingHandlerCalls = 10);
+        Room<Counter> room = await Join(client);
+        ConcurrentQueue<string> seen = new();
+        using ManualResetEventSlim release = new();
+        room.On<Counter>("changed", (data, meta) => seen.Enqueue($"E{data.Value}#{meta.Seq}"));
+        room.OnSnapshot((view, _) =>
+        {
+            seen.Enqueue("S" + view!.Value);
+            release.Wait(s_patience);
+        });
+        await Until(() => seen.Count == 1, "the handler that does not return");
+
+        // Fifty events arrive while that handler holds up every call after it. The client keeps reading its
+        // connection all the while: a request sent after the events is answered.
+        for (int seq = 1; seq <= 50; seq++)
+        {
+            await _gateway.Event(client.ClientId, seq, value: seq);
+        }
+
+        Task<int> probing = room.RequestAsync<int>("add", new { Amount = 0 });
+        Published probe = await _gateway.Next("cmd/add");
+        await _gateway.Reply(client.ClientId, probe.CommandId, d: "50");
+        Assert.Equal(50, await probing.WaitAsync(s_patience));
+
+        // Ten calls wait, not fifty. The room asks the server for nothing as long as the app has not caught up.
+        Assert.Equal(10, client.Callbacks.Count);
+        await Task.Delay(400);
+        Assert.DoesNotContain(_gateway.All(), published => published.Topic.EndsWith("/sys/sync", StringComparison.Ordinal));
+
+        // The handler returns and the app works off what waited. Then the room asks for the state as it is now.
+        release.Set();
+        Published sync = await _gateway.Next("sys/sync");
+        Assert.Equal(-1, sync.Body.GetProperty("seq").GetInt64());
+        await _gateway.Snapshot(client.ClientId, at: 50, value: 50);
+        await _gateway.Reply(client.ClientId, sync.CommandId, code: "resynced");
+        await _gateway.Event(client.ClientId, seq: 51, value: 51);
+        await Until(() => seen.Count == 13, "the snapshot and the event after it");
+
+        // What the app saw is what it sees after a reconnect: events, a snapshot that stands for the ones it missed,
+        // and the events after it.
+        Assert.Equal(["S0", .. Enumerable.Range(1, 10).Select(seq => $"E{seq}#{seq}"), "S50", "E51#51"], seen);
+    }
+
+    [Fact]
+    public async Task A_handler_that_stays_slower_than_the_room_gets_snapshots_and_not_an_ever_longer_queue()
+    {
+        const int Limit = 5;
+        const int Total = 100;
+        GrainWireClient client = await Connect(options => options.MaxPendingHandlerCalls = Limit);
+        Room<Counter> room = await Join(client);
+        ConcurrentQueue<(bool Snapshot, long Position)> seen = new();
+        ConcurrentQueue<int> waiting = new();
+        room.OnSnapshot((view, _) => seen.Enqueue((true, view!.Value)));
+        room.On<Counter>("changed", (_, meta) =>
+        {
+            waiting.Enqueue(client.Callbacks.Count);
+            seen.Enqueue((false, meta.Seq));
+            Thread.Sleep(30);
+        });
+
+        // The "server": it answers every sync with a snapshot of where the room is, and then "resynced".
+        int answered = 0;
+        async Task AnswerSyncs(int position)
+        {
+            List<Published> syncs = [.. _gateway.All().Where(published => published.Topic.EndsWith("/sys/sync", StringComparison.Ordinal))];
+            for (; answered < syncs.Count; answered++)
+            {
+                await _gateway.Snapshot(client.ClientId, at: position, value: position);
+                await _gateway.Reply(client.ClientId, syncs[answered].CommandId, code: "resynced");
+            }
+        }
+
+        // The room produces events about three times as fast as the handler takes them, for more than a second.
+        for (int seq = 1; seq <= Total; seq++)
+        {
+            await _gateway.Event(client.ClientId, seq, value: seq);
+            waiting.Enqueue(client.Callbacks.Count);
+            await AnswerSyncs(seq);
+            await Task.Delay(10);
+        }
+
+        // Then the room goes quiet, and the app ends up where the room is.
+        DateTime deadline = DateTime.UtcNow + s_patience;
+        while (seen.LastOrDefault().Position != Total)
+        {
+            Assert.True(DateTime.UtcNow < deadline, $"The app did not catch up. It saw: {string.Join(" ", seen)}");
+            await AnswerSyncs(Total);
+            await Task.Delay(20);
+        }
+
+        // The calls that waited never were more than the limit, however far the handler was behind.
+        Assert.InRange(waiting.Max(), 1, Limit);
+
+        // The app missed events, and was told so with a snapshot each time: an event always follows the event or the
+        // snapshot right before it.
+        (bool Snapshot, long Position)[] all = [.. seen];
+        Assert.True(all[0].Snapshot);
+        Assert.Contains(all.Skip(1), item => item.Snapshot);
+        Assert.InRange(all.Count(item => !item.Snapshot), 1, Total - 1);
+        for (int i = 1; i < all.Length; i++)
+        {
+            if (all[i].Snapshot)
+            {
+                Assert.True(all[i].Position >= all[i - 1].Position, $"A snapshot moved the app backwards at {i}: {string.Join(" ", all)}");
+            }
+            else
+            {
+                Assert.True(all[i].Position == all[i - 1].Position + 1, $"An event did not follow what came before it at {i}: {string.Join(" ", all)}");
+            }
+        }
     }
 
     [Fact]
@@ -704,6 +895,10 @@ public sealed class ClientProtocolTests : IAsyncLifetime
         GrainWireClientOptions http = Valid();
         http.Url = new Uri("http://127.0.0.1:1/mqtt");
         await Assert.ThrowsAsync<ArgumentException>(() => GrainWireClient.ConnectAsync(http));
+
+        GrainWireClientOptions noHandlerCalls = Valid();
+        noHandlerCalls.MaxPendingHandlerCalls = 0;
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => GrainWireClient.ConnectAsync(noHandlerCalls));
 
         GrainWireClientOptions noTimeout = Valid();
         noTimeout.RequestTimeout = TimeSpan.Zero;

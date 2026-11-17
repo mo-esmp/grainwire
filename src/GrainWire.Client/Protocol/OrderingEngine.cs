@@ -11,11 +11,16 @@
 /// </remarks>
 public sealed class OrderingEngine
 {
+    private const int MaxRetired = 16;
     private readonly long _gapWait;
     private readonly long _syncInterval;
     private readonly long _syncRetry;
     private readonly int _maxBuffered;
     private readonly List<EventEnvelope> _buffer = [];
+    private readonly List<(string Incarnation, string Epoch)> _retired = [];
+    private SnapshotEnvelope? _refused;
+    private long _snapshotsReceived;
+    private long _lastAccepted;
     private string? _incarnation;
     private string? _epoch;
     private long _position;
@@ -40,6 +45,13 @@ public sealed class OrderingEngine
     /// <summary>True once a snapshot has been processed.</summary>
     public bool Ready => _hasBaseline;
 
+    /// <summary>
+    /// How many snapshots have arrived so far, whatever became of them. Read it when a sync is sent and pass it to
+    /// <see cref="ConfirmResynced"/>: it tells what arrived before the question from what arrived after it, which a
+    /// clock cannot do for two things that happen within one of its ticks.
+    /// </summary>
+    public long SnapshotsReceived => _snapshotsReceived;
+
     /// <summary>Call when a snapshot should have arrived (after a successful join) but may have been lost.</summary>
     public void ExpectBaseline(long now)
     {
@@ -53,23 +65,29 @@ public sealed class OrderingEngine
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         _lastActivityAt = now;
-
-        // An older baseline of the stream we are already following would move the app backwards.
-        if (_hasBaseline && snapshot.Incarnation == _incarnation && snapshot.Epoch == _epoch && snapshot.At < _position)
+        _snapshotsReceived++;
+        _refused = null;
+        if (_hasBaseline)
         {
-            return [];
+            if (IsCurrentStream(snapshot.Incarnation, snapshot.Epoch))
+            {
+                // An older baseline of the stream we are already following would move the app backwards.
+                if (snapshot.At < _position)
+                {
+                    return [];
+                }
+            }
+            else if (_retired.Contains((snapshot.Incarnation, snapshot.Epoch)))
+            {
+                // A stream the client has left does not come back, so this snapshot was on its way for a long time.
+                // Following it would show the app an old state, and events it already has a second time. It is kept
+                // for the one case in which the server says otherwise (see ConfirmResynced).
+                _refused = snapshot;
+                return [];
+            }
         }
 
-        _incarnation = snapshot.Incarnation;
-        _epoch = snapshot.Epoch;
-        _position = snapshot.At;
-        _hasBaseline = true;
-        DropUnusable();
-
-        List<OrderingAction> actions = [new SnapshotAction(snapshot)];
-        Drain(actions);
-        UpdateWaiting(now);
-        return actions;
+        return Accept(snapshot, now);
     }
 
     public IReadOnlyList<OrderingAction> ReceiveEvent(EventEnvelope @event, long now)
@@ -78,7 +96,7 @@ public sealed class OrderingEngine
         _lastActivityAt = now;
 
         // Before any snapshot, or from another epoch or incarnation: it can only be placed once a snapshot arrives.
-        if (!_hasBaseline || !IsCurrentStream(@event))
+        if (!_hasBaseline || !IsCurrentStream(@event.Incarnation, @event.Epoch))
         {
             Hold(@event);
             _waitingSince ??= now;
@@ -117,6 +135,26 @@ public sealed class OrderingEngine
         UpdateWaiting(now);
     }
 
+    /// <summary>
+    /// The server answered a sync with "resynced": just before, it sent a snapshot of the stream that is current. If
+    /// that snapshot was refused because it belongs to a stream the client had left, the client was wrong about which
+    /// of the two streams is over (it had followed a late snapshot of an epoch it had never seen), and the snapshot is
+    /// applied after all.
+    /// </summary>
+    /// <param name="snapshotsReceivedBefore">What <see cref="SnapshotsReceived"/> was when the sync was sent.</param>
+    /// <param name="now">The current time.</param>
+    public IReadOnlyList<OrderingAction> ConfirmResynced(long snapshotsReceivedBefore, long now)
+    {
+        // Only the last snapshot to arrive can be the answer (a refused one is forgotten when the next arrives), and
+        // only if it came after the question. When a snapshot was applied since the sync was sent, that one was the answer.
+        if (_refused is not { } snapshot || _snapshotsReceived <= snapshotsReceivedBefore || _lastAccepted > snapshotsReceivedBefore)
+        {
+            return [];
+        }
+
+        return Accept(snapshot, now);
+    }
+
     /// <summary>Call regularly. Returns a <see cref="SyncAction"/> when the client should check itself against the server.</summary>
     public IReadOnlyList<OrderingAction> Tick(long now)
     {
@@ -131,9 +169,37 @@ public sealed class OrderingEngine
         return [SyncAction.Instance];
     }
 
-    private bool IsCurrentStream(EventEnvelope @event) => @event.Incarnation == _incarnation && @event.Epoch == _epoch;
+    private bool IsCurrentStream(string incarnation, string epoch) => incarnation == _incarnation && epoch == _epoch;
 
-    private void DropUnusable() => _buffer.RemoveAll(held => !IsCurrentStream(held) || held.Seq <= _position);
+    private List<OrderingAction> Accept(SnapshotEnvelope snapshot, long now)
+    {
+        if (_hasBaseline && !IsCurrentStream(snapshot.Incarnation, snapshot.Epoch))
+        {
+            // The stream the client leaves here is over. Only the last few are remembered: a snapshot is not on its
+            // way for as long as it takes a room to restart that often.
+            _retired.Add((_incarnation!, _epoch!));
+            if (_retired.Count > MaxRetired)
+            {
+                _retired.RemoveAt(0);
+            }
+        }
+
+        _retired.Remove((snapshot.Incarnation, snapshot.Epoch));
+        _refused = null;
+        _lastAccepted = _snapshotsReceived;
+        _incarnation = snapshot.Incarnation;
+        _epoch = snapshot.Epoch;
+        _position = snapshot.At;
+        _hasBaseline = true;
+        DropUnusable();
+
+        List<OrderingAction> actions = [new SnapshotAction(snapshot)];
+        Drain(actions);
+        UpdateWaiting(now);
+        return actions;
+    }
+
+    private void DropUnusable() => _buffer.RemoveAll(held => !IsCurrentStream(held.Incarnation, held.Epoch) || held.Seq <= _position);
 
     private void Hold(EventEnvelope @event)
     {
@@ -156,7 +222,7 @@ public sealed class OrderingEngine
     {
         while (true)
         {
-            int index = _buffer.FindIndex(held => IsCurrentStream(held) && held.Seq == _position + 1);
+            int index = _buffer.FindIndex(held => IsCurrentStream(held.Incarnation, held.Epoch) && held.Seq == _position + 1);
             if (index < 0)
             {
                 return;

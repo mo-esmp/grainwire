@@ -136,6 +136,66 @@ public class OrderingEngineTests
         Assert.Equal("S2", Seqs(engine.ReceiveSnapshot(Snapshot(2), 4)));
     }
 
+    [Theory]
+    [InlineData("e2", "i1")] // the room restarted: a new stream epoch
+    [InlineData("e9", "i2")] // the room was closed and created again: a new incarnation
+    public void Refuses_a_late_snapshot_of_a_stream_it_has_left(string se, string ri)
+    {
+        OrderingEngine engine = new(s_options, 0);
+        engine.ReceiveSnapshot(Snapshot(0), 0);
+        Assert.Equal("1", Seqs(engine.ReceiveEvent(Event(1), 1)));
+        Assert.Equal("S0", Seqs(engine.ReceiveSnapshot(Snapshot(0, se, ri), 10)));
+        Assert.Equal("1", Seqs(engine.ReceiveEvent(Event(1, se, ri), 11)));
+
+        // A snapshot of the old stream that was still on its way does not bring that stream back,
+        Assert.Empty(engine.ReceiveSnapshot(Snapshot(0), 20));
+
+        // so a late copy of an event the app already has cannot be delivered a second time.
+        Assert.Empty(engine.ReceiveEvent(Event(1), 21));
+        Assert.Equal(new StreamPosition(ri, se, 1), engine.Current);
+        Assert.Equal("2", Seqs(engine.ReceiveEvent(Event(2, se, ri), 22)));
+    }
+
+    [Fact]
+    public void Returns_to_a_stream_it_left_when_the_server_answers_a_sync_with_a_snapshot_of_it()
+    {
+        // The client followed e2 and then took a late snapshot of e1, an epoch it had never seen, for a restart.
+        OrderingEngine engine = new(s_options, 0);
+        engine.ReceiveSnapshot(Snapshot(4, "e2"), 0);
+        Assert.Equal("S7", Seqs(engine.ReceiveSnapshot(Snapshot(7, "e1"), 10)));
+
+        // An event of e2 shows that something is wrong. The server answers the sync with e2's snapshot and "resynced".
+        Assert.Empty(engine.ReceiveEvent(Event(6, "e2"), 20));
+        Assert.Equal("sync", Seqs(engine.Tick(300)));
+        long asked = engine.SnapshotsReceived;
+        Assert.Empty(engine.ReceiveSnapshot(Snapshot(5, "e2"), 320));
+        Assert.Equal("S5,6", Seqs(engine.ConfirmResynced(asked, now: 321)));
+        Assert.Equal(new StreamPosition("i1", "e2", 6), engine.Current);
+
+        // Now e1 is the stream that was left.
+        Assert.Empty(engine.ReceiveSnapshot(Snapshot(7, "e1"), 330));
+        Assert.Empty(engine.Tick(5_000));
+    }
+
+    [Fact]
+    public void Stays_away_from_a_stream_it_left_when_the_sync_was_answered_with_another_snapshot()
+    {
+        OrderingEngine engine = new(s_options, 0);
+        engine.ReceiveSnapshot(Snapshot(0), 0);
+        engine.ReceiveSnapshot(Snapshot(0, "e2"), 10);
+
+        // Refused before the sync was sent: it cannot be the answer, even when no time passed in between.
+        Assert.Empty(engine.ReceiveSnapshot(Snapshot(0), 20));
+        Assert.Empty(engine.ConfirmResynced(engine.SnapshotsReceived, now: 20));
+
+        // The answer was a snapshot of the stream the client follows; a late one of the old stream came right after it.
+        long asked = engine.SnapshotsReceived;
+        Assert.Equal("S3", Seqs(engine.ReceiveSnapshot(Snapshot(3, "e2"), 220)));
+        Assert.Empty(engine.ReceiveSnapshot(Snapshot(0), 225));
+        Assert.Empty(engine.ConfirmResynced(asked, now: 230));
+        Assert.Equal(new StreamPosition("i1", "e2", 3), engine.Current);
+    }
+
     [Fact]
     public void Forgets_held_events_of_an_older_stream_when_the_server_says_the_client_is_in_sync()
     {
@@ -205,7 +265,8 @@ public class OrderingEngineTests
 
     /// <summary>
     /// The same property the TypeScript client checks with fast-check, over seeded random runs: whatever the network
-    /// drops, duplicates or delays, events are never delivered twice or out of order, and the client ends where the room is.
+    /// drops, duplicates or delays (by seconds, too), events are never delivered twice or out of order, and the client
+    /// ends where the room is.
     /// </summary>
     [Fact]
     public void Never_delivers_an_event_twice_or_out_of_order_and_always_converges()
@@ -217,8 +278,8 @@ public class OrderingEngineTests
             int count = random.Next(1, 81);
             for (int i = 0; i < count; i++)
             {
-                // Op 0 = the room restarts, otherwise an event.
-                steps.Add(new Step(random.Next(0, 15), random.Next(0, 4) == 0, random.Next(0, 2) == 0, random.Next(0, 401)));
+                // Op 0 = the room restarts, otherwise an event. One step in four is late by up to six seconds.
+                steps.Add(new Step(random.Next(0, 15), random.Next(0, 4) == 0, random.Next(0, 2) == 0, random.Next(0, 401), random.Next(0, 4) == 0 ? random.Next(1, 6_001) : 0));
             }
 
             Simulation result = Simulation.Run(steps);
@@ -236,6 +297,9 @@ public class OrderingEngineTests
                 }
             }
 
+            // Across baselines too: no event reaches the app a second time.
+            Assert.True(result.Delivered.Distinct().Count() == result.Delivered.Count, $"Seed {seed}: an event was delivered twice.");
+
             // Nothing is delivered before the first baseline.
             if (result.Baselines.Count > 0)
             {
@@ -251,18 +315,25 @@ public class OrderingEngineTests
         }
     }
 
-    private sealed record Step(int Op, bool Drop, bool Duplicate, int Delay);
+    /// <param name="Op">0 = the room restarts, otherwise an event.</param>
+    /// <param name="Drop">The packet is lost.</param>
+    /// <param name="Duplicate">A copy of the packet arrives after it.</param>
+    /// <param name="Delay">How long the packet takes, in milliseconds.</param>
+    /// <param name="Late">How much longer than a few milliseconds the copy takes. Mostly 0.</param>
+    private sealed record Step(int Op, bool Drop, bool Duplicate, int Delay, int Late);
 
     /// <summary>
     /// A room that produces events (and sometimes restarts into a new epoch) and a network that may drop, duplicate and
-    /// delay anything. Sync requests are answered with a snapshot, which travels the same network.
+    /// delay anything. Sync requests are answered with a snapshot and then "resynced", which travel the same network.
     /// </summary>
     private sealed class Simulation
     {
         private readonly OrderingEngine _engine = new(s_options, 0);
-        private readonly List<(long At, long Order, InboxEnvelope Packet)> _inFlight = [];
+        private readonly List<(long At, long Order, Func<long, IReadOnlyList<OrderingAction>> Arrive)> _inFlight = [];
+        private Step _step = new(1, false, false, 0, 0);
         private long _now;
         private long _sent;
+        private int _syncs;
         private int _epoch = 1;
         private long _position;
 
@@ -280,10 +351,11 @@ public class OrderingEngineTests
 
             // The join: its snapshot may be lost like anything else.
             simulation._engine.ExpectBaseline(0);
-            simulation.Transmit(Snapshot(0), steps[0].Drop, false, 5);
+            simulation.Transmit(Snapshot(0), steps[0], 5);
 
             foreach (Step step in steps)
             {
+                simulation._step = step;
                 if (step.Op == 0)
                 {
                     // The room restarts: new epoch, positions start over. Clients learn of it through a later event or sync.
@@ -293,7 +365,7 @@ public class OrderingEngineTests
                 else
                 {
                     simulation._position++;
-                    simulation.Transmit(Event(simulation._position, $"e{simulation._epoch}"), step.Drop, step.Duplicate, step.Delay);
+                    simulation.Transmit(Event(simulation._position, $"e{simulation._epoch}"), step, step.Delay);
                 }
 
                 simulation.Advance(simulation._now + 20, reliable: false);
@@ -304,17 +376,42 @@ public class OrderingEngineTests
             return simulation;
         }
 
-        private void Transmit(InboxEnvelope packet, bool drop, bool duplicate, int delay)
+        private void Transmit(InboxEnvelope packet, Step step, int delay)
         {
-            if (drop)
+            if (step.Drop)
             {
                 return;
             }
 
-            _inFlight.Add((_now + delay, _sent++, packet));
-            if (duplicate)
+            Send(delay, Arrival(packet));
+            if (step.Duplicate)
             {
-                _inFlight.Add((_now + delay + 7, _sent++, packet));
+                Send(delay + 7 + step.Late, Arrival(packet));
+            }
+        }
+
+        private Func<long, IReadOnlyList<OrderingAction>> Arrival(InboxEnvelope packet) => now =>
+            packet is EventEnvelope @event ? _engine.ReceiveEvent(@event, now) : _engine.ReceiveSnapshot((SnapshotEnvelope)packet, now);
+
+        private void Send(long delay, Func<long, IReadOnlyList<OrderingAction>> arrive) => _inFlight.Add((_now + delay, _sent++, arrive));
+
+        /// <summary>
+        /// The server answers a sync with a snapshot and then "resynced". Until the network calms down the answer may take
+        /// seconds, or a copy of its snapshot may arrive seconds later. Like the client, the simulation waits for one
+        /// answer at a time, and not for longer than five seconds.
+        /// </summary>
+        private void AnswerSync(bool reliable)
+        {
+            int id = ++_syncs;
+            long askedAt = _now;
+            long snapshotsBefore = _engine.SnapshotsReceived;
+            SnapshotEnvelope answer = Snapshot(_position, $"e{_epoch}");
+            long delay = reliable ? 1 : _step.Duplicate ? 30 : 30 + _step.Late;
+            Send(delay, Arrival(answer));
+            Send(delay, now => id == _syncs && now - askedAt < 5_000 ? _engine.ConfirmResynced(snapshotsBefore, now) : []);
+            if (!reliable && _step.Duplicate)
+            {
+                Send(delay + 7 + _step.Late, Arrival(answer));
             }
         }
 
@@ -331,7 +428,7 @@ public class OrderingEngineTests
                         Baselines.Add((s.Snapshot.Epoch, s.Snapshot.At, Delivered.Count));
                         break;
                     default:
-                        Transmit(Snapshot(_position, $"e{_epoch}"), false, false, reliable ? 1 : 30);
+                        AnswerSync(reliable);
                         break;
                 }
             }
@@ -359,9 +456,9 @@ public class OrderingEngineTests
                         break;
                     }
 
-                    InboxEnvelope packet = _inFlight[next].Packet;
+                    Func<long, IReadOnlyList<OrderingAction>> arrive = _inFlight[next].Arrive;
                     _inFlight.RemoveAt(next);
-                    Apply(packet is EventEnvelope @event ? _engine.ReceiveEvent(@event, _now) : _engine.ReceiveSnapshot((SnapshotEnvelope)packet, _now), reliable);
+                    Apply(arrive(_now), reliable);
                 }
 
                 Apply(_engine.Tick(_now), reliable);
