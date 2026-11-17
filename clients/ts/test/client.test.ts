@@ -1,10 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "../src/client.js";
-import type { GrainWireClient, Room } from "../src/client.js";
-import type { ReplyEnvelope, SnapshotEnvelope } from "../src/protocol.js";
+import type { ConnectOptions, GrainWireClient, Room } from "../src/client.js";
+import { OutcomeUnknownError, RejectedError } from "../src/errors.js";
+import type { EventEnvelope, ReplyEnvelope, SnapshotEnvelope } from "../src/protocol.js";
 
 const key = "counter/r1";
-const snapshot: SnapshotEnvelope = { t: "$snapshot", room: key, ri: "i1", se: "e1", at: 0, d: { value: 0 }, members: [], you: { player: "alice", status: "online" } };
+
+interface Counter {
+  value: number;
+}
+
+function snapshotAt(at: number, value: number, se = "e1"): SnapshotEnvelope {
+  return { t: "$snapshot", room: key, ri: "i1", se, at, d: { value }, members: [], you: { player: "alice", status: "online" } };
+}
+
+function changed(seq: number, value: number, se = "e1"): EventEnvelope {
+  return { t: "changed", room: key, ri: "i1", se, seq, d: { value } };
+}
+
+const snapshot = snapshotAt(0, 0);
 
 interface Published {
   topic: string;
@@ -62,38 +76,118 @@ async function untilSent(path: string, count: number): Promise<Published> {
   return sent(path)[count - 1]!;
 }
 
-/** A connected client that has joined the room and has its first snapshot. */
-async function joined(): Promise<{ client: GrainWireClient; room: Room }> {
-  const connecting = connect({ url: "ws://gateway.test/mqtt", clientId: "c1" });
+/** A connected client. Closed again after the test. */
+async function connected(options: Partial<ConnectOptions> = {}): Promise<GrainWireClient> {
+  const connecting = connect({ url: "ws://gateway.test/mqtt", clientId: "c1", ...options });
   await vi.advanceTimersByTimeAsync(0);
   gateway.handlers.get("connect")?.({ properties: { userProperties: { "gw-player": "alice" } } });
-  const client = await connecting;
+  client = await connecting;
+  return client;
+}
 
-  const joining = client.join("counter", "r1");
-  await deliver(snapshot);
+/** A connected client that has joined the room and has its first snapshot. */
+async function joined(first: SnapshotEnvelope = snapshot): Promise<{ client: GrainWireClient; room: Room<Counter> }> {
+  const client = await connected();
+  const joining = client.join<Counter>("counter", "r1");
+  await deliver(first);
   await reply(await untilSent("sys/join", 1), { status: "ok", code: "joined" });
   return { client, room: await joining };
 }
 
+/** Records what a room shows the app, in the order the app sees it: "S5" is a snapshot with value 5, "E6#2" an event. */
+function watch(room: Room<Counter>): string[] {
+  const seen: string[] = [];
+  room.onSnapshot((view) => seen.push(`S${view.value}`));
+  room.on<Counter>("changed", (data, meta) => seen.push(`E${data.value}#${meta.seq}`));
+  return seen;
+}
+
+let client: GrainWireClient | undefined;
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000_000);
+  gateway.handlers.clear();
+  gateway.published.length = 0;
+});
+
+afterEach(async () => {
+  await client?.close();
+  client = undefined;
+  vi.useRealTimers();
+});
+
+describe("a room whose server restarted", () => {
+  it("does not show the app a late snapshot of an epoch the room has left", async () => {
+    const { room } = await joined();
+    const seen = watch(room);
+    await deliver(changed(1, 1));
+
+    // The room restarted on the server, and the client follows the new epoch.
+    await deliver(snapshotAt(0, 10, "e2"));
+    await deliver(changed(1, 11, "e2"));
+
+    // What was still on its way from the old epoch: its snapshot, and an event the app already has.
+    await deliver(snapshot);
+    await deliver(changed(1, 1));
+    await deliver(changed(2, 12, "e2"));
+    expect(seen).toEqual(["S0", "E1#1", "S10", "E11#1", "E12#2"]);
+    expect(room.view).toEqual({ value: 10 });
+  });
+
+  it("returns from a late snapshot of an older epoch when the server answers its sync", async () => {
+    // The client joins in epoch e2. A snapshot of e1, which it never saw, arrives late and looks like a restart.
+    const { room } = await joined(snapshotAt(4, 4, "e2"));
+    const seen = watch(room);
+    await deliver(snapshotAt(7, 70, "e1"));
+    await vi.advanceTimersByTimeAsync(50);
+
+    // The server answers a sync with the snapshot of e2, the epoch that is current, and the room follows it again.
+    const syncing = room.sync();
+    const sync = await untilSent("sys/sync", 1);
+    await deliver(snapshotAt(5, 5, "e2"));
+    await reply(sync, { status: "ok", code: "resynced" });
+    await syncing;
+    await deliver(changed(6, 6, "e2"));
+    expect(seen).toEqual(["S4", "S70", "S5", "E6#6"]);
+  });
+});
+
+describe("a join that fails", () => {
+  it("leaves the room again when the server accepted it and only the reply was lost", async () => {
+    const client = await connected({ requestTimeoutMs: 1_000 });
+    const failed = expect(client.join("counter", "r1")).rejects.toBeInstanceOf(OutcomeUnknownError);
+    await untilSent("sys/join", 1);
+
+    // The snapshot shows that the server has this connection in the room. The reply never comes.
+    await deliver(snapshot);
+    await vi.advanceTimersByTimeAsync(1_100);
+    await failed;
+    expect(sent("sys/leave").length).toBe(1);
+  });
+
+  it("leaves the room again when no snapshot follows the reply", async () => {
+    const client = await connected({ requestTimeoutMs: 1_000 });
+    const failed = expect(client.join("counter", "r1")).rejects.toBeInstanceOf(OutcomeUnknownError);
+    await reply(await untilSent("sys/join", 1), { status: "ok", code: "joined" });
+    await vi.advanceTimersByTimeAsync(1_100);
+    await failed;
+    expect(sent("sys/leave").length).toBe(1);
+  });
+
+  it("has nothing to leave when the server refused it", async () => {
+    const client = await connected();
+    const failed = expect(client.join("counter", "r1")).rejects.toBeInstanceOf(RejectedError);
+    await reply(await untilSent("sys/join", 1), { status: "rejected", code: "room-full" });
+    await failed;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sent("sys/leave").length).toBe(0);
+  });
+});
+
 describe("a command answered with not-joined", () => {
-  let client: GrainWireClient | undefined;
-
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(1_000_000);
-    gateway.handlers.clear();
-    gateway.published.length = 0;
-  });
-
-  afterEach(async () => {
-    await client?.close();
-    client = undefined;
-    vi.useRealTimers();
-  });
-
   it("waits while the join it needs cannot be done yet, and goes out again once the room is back", async () => {
     const opened = await joined();
-    client = opened.client;
 
     let outcome: unknown = "pending";
     const adding = opened.room.request<number>("add", { amount: 5 });
@@ -134,7 +228,6 @@ describe("a command answered with not-joined", () => {
 
   it("does not start a join before the one that is already waiting for its next try", async () => {
     const opened = await joined();
-    client = opened.client;
 
     const adding = opened.room.request<number>("add", { amount: 5 });
     void adding.catch(() => undefined);

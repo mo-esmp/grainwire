@@ -35,6 +35,10 @@ export interface StreamPosition {
  * in the current time and act on the returned actions. That keeps it testable against any network behaviour.
  */
 export class OrderingEngine {
+  private static readonly maxRetired = 16;
+  private retired: { ri: string; se: string }[] = [];
+  private refused: { snapshot: SnapshotEnvelope; at: number } | undefined;
+  private acceptedAt: number | undefined;
   private ri: string | undefined;
   private se: string | undefined;
   private position = 0;
@@ -67,20 +71,21 @@ export class OrderingEngine {
 
   receiveSnapshot(snapshot: SnapshotEnvelope, now: number): OrderingAction[] {
     this.lastActivityAt = now;
+    this.refused = undefined;
+    if (this.hasBaseline) {
+      if (snapshot.ri === this.ri && snapshot.se === this.se) {
+        // An older baseline of the stream we are already following would move the app backwards.
+        if (snapshot.at < this.position) return [];
+      } else if (this.retired.some((left) => left.ri === snapshot.ri && left.se === snapshot.se)) {
+        // A stream the client has left does not come back, so this snapshot was on its way for a long time. Following
+        // it would show the app an old state, and events it already has a second time. It is kept for the one case in
+        // which the server says otherwise (see confirmResynced).
+        this.refused = { snapshot, at: now };
+        return [];
+      }
+    }
 
-    // An older baseline of the stream we are already following would move the app backwards.
-    if (this.hasBaseline && snapshot.ri === this.ri && snapshot.se === this.se && snapshot.at < this.position) return [];
-
-    this.ri = snapshot.ri;
-    this.se = snapshot.se;
-    this.position = snapshot.at;
-    this.hasBaseline = true;
-    this.buffer = this.buffer.filter((e) => e.ri === this.ri && e.se === this.se && e.seq > this.position);
-
-    const actions: OrderingAction[] = [{ kind: "snapshot", snapshot }];
-    this.drain(actions);
-    this.updateWaiting(now);
-    return actions;
+    return this.accept(snapshot, now);
   }
 
   receiveEvent(event: EventEnvelope, now: number): OrderingAction[] {
@@ -120,6 +125,20 @@ export class OrderingEngine {
     this.updateWaiting(now);
   }
 
+  /**
+   * The server answered a sync with "resynced": just before, it sent a snapshot of the stream that is current. If that
+   * snapshot was refused because it belongs to a stream the client had left, the client was wrong about which of the
+   * two streams is over (it had followed a late snapshot of an epoch it had never seen), and the snapshot is applied
+   * after all. `askedAt` is when the sync was sent.
+   */
+  confirmResynced(askedAt: number, now: number): OrderingAction[] {
+    // Only the last snapshot to arrive can be the answer, and only if it came after the question. When a snapshot was
+    // applied since the sync was sent, that one was the answer.
+    const refused = this.refused;
+    if (!refused || refused.at < askedAt || (this.acceptedAt !== undefined && this.acceptedAt >= askedAt)) return [];
+    return this.accept(refused.snapshot, now);
+  }
+
   /** Call regularly. Returns a sync action when the client should check itself against the server. */
   tick(now: number): OrderingAction[] {
     const behind = this.waitingSince !== undefined && now - this.waitingSince >= this.options.gapWaitMs && now - this.lastSyncAt >= this.options.syncRetryMs;
@@ -127,6 +146,29 @@ export class OrderingEngine {
     if (!behind && !idle) return [];
     this.lastSyncAt = now;
     return [{ kind: "sync" }];
+  }
+
+  private accept(snapshot: SnapshotEnvelope, now: number): OrderingAction[] {
+    if (this.hasBaseline && (snapshot.ri !== this.ri || snapshot.se !== this.se)) {
+      // The stream the client leaves here is over. Only the last few are remembered: a snapshot is not on its way for
+      // as long as it takes a room to restart that often.
+      this.retired.push({ ri: this.ri!, se: this.se! });
+      if (this.retired.length > OrderingEngine.maxRetired) this.retired.shift();
+    }
+
+    this.retired = this.retired.filter((left) => left.ri !== snapshot.ri || left.se !== snapshot.se);
+    this.refused = undefined;
+    this.acceptedAt = now;
+    this.ri = snapshot.ri;
+    this.se = snapshot.se;
+    this.position = snapshot.at;
+    this.hasBaseline = true;
+    this.buffer = this.buffer.filter((e) => e.ri === this.ri && e.se === this.se && e.seq > this.position);
+
+    const actions: OrderingAction[] = [{ kind: "snapshot", snapshot }];
+    this.drain(actions);
+    this.updateWaiting(now);
+    return actions;
   }
 
   private hold(event: EventEnvelope): void {

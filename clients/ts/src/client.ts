@@ -148,8 +148,8 @@ export class GrainWireClient {
    * Joins a room (creating it when `create` is set). Resolves once the first snapshot has been processed, so the
    * returned Room has its `view`, `members` and `you`. Joining a room this client is already in returns the same Room.
    *
-   * Rejects with OutcomeUnknownError when the server accepted the join but no snapshot arrived in time. The player may
-   * then be a member of the room; joining again is safe.
+   * Rejects with OutcomeUnknownError when no reply arrived in time, or the server accepted the join but no snapshot
+   * followed. The player may then be a member of the room; joining again is safe.
    */
   async join<TView = unknown>(type: string, id: string, options: JoinOptions = {}): Promise<Room<TView>> {
     const key = `${type}/${id}`;
@@ -184,11 +184,12 @@ export class GrainWireClient {
       return room;
     } catch (error) {
       if (this.rooms.get(key) === (room as Room<unknown>)) this.rooms.delete(key);
-      const joinedOnServer = room._joinedOnce && !room.closed;
+      const outcomeUnknown = error instanceof OutcomeUnknownError && !room.closed;
       room._close("removed", undefined, false);
 
-      // The server attached this connection but the client gave up: stop the room's events from coming here.
-      if (joinedOnServer && this._connected) void this.request("leave", key, "sys/leave", {}, 5_000).catch(() => undefined);
+      // The server may have this connection in the room all the same: the reply was lost, or no snapshot followed
+      // it. Stop the room's events from coming here. A gateway that never saw the join answers "left" as well.
+      if (outcomeUnknown && this._connected) void this.request("leave", key, "sys/leave", {}, 5_000).catch(() => undefined);
       throw error;
     }
   }
@@ -575,11 +576,6 @@ export class Room<TView = unknown> {
     return !this.closed && !this.attached && this.joinedOnce;
   }
 
-  /** @internal */
-  get _joinedOnce(): boolean {
-    return this.joinedOnce;
-  }
-
   /** @internal True while this connection is joined to the room on the server, as far as the client knows. */
   get _attached(): boolean {
     return this.attached;
@@ -730,10 +726,12 @@ export class Room<TView = unknown> {
     if (this.syncing || this.closed || !this.attached) return;
     this.syncing = true;
     try {
+      const askedAt = Date.now();
       const position = this.engine.current;
       const reply = await this.client.request("sync", this.key, "sys/sync", { ri: position.ri, se: position.se, seq: this.engine.ready ? position.seq : -1 }, 5_000);
       if (reply.status === "ok") {
         if (reply.code === "in-sync") this.engine.confirmInSync(Date.now());
+        else if (reply.code === "resynced") this.apply(this.engine.confirmResynced(askedAt, Date.now()));
       } else if (reply.code === "room-not-found") {
         this._close("lost", undefined, true);
       } else if (reply.code === "not-member") {
