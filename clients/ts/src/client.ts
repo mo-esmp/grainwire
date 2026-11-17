@@ -250,6 +250,17 @@ export class GrainWireClient {
     this.mqtt.publish(`rooms/${roomKey}/${path}`, JSON.stringify({ ...body, cmd: newId(), noreply: true }), { qos: 1 });
   }
 
+  /**
+   * @internal Sends the commands that still wait for a reply again, under their original command ids: all of them, or
+   * only those of one room.
+   */
+  _resendCommands(roomKey?: string): void {
+    if (this._state !== "connected") return;
+    for (const pending of this.pending.values()) {
+      if (pending.kind === "command" && (roomKey === undefined || pending.roomKey === roomKey)) this.publish(pending);
+    }
+  }
+
   // ---------------------------------------------------------------- connection
 
   private async start(): Promise<void> {
@@ -351,10 +362,7 @@ export class GrainWireClient {
   private async resume(): Promise<void> {
     const rooms = [...this.rooms.values()].filter((room) => room._needsRejoin);
     await Promise.allSettled(rooms.map((room) => room._rejoin()));
-    if (this._state !== "connected") return;
-    for (const pending of this.pending.values()) {
-      if (pending.kind === "command") this.publish(pending);
-    }
+    this._resendCommands();
   }
 
   private setState(state: ConnectionState): void {
@@ -405,8 +413,9 @@ export class GrainWireClient {
       if (reply.code === "not-joined") {
         const room = this.rooms.get(pending.roomKey);
         if (room) {
-          void room._rejoin().then(() => {
-            if (this.pending.has(pending.cmd)) this.publish(pending);
+          // If the join fails for now, the room tries again later and re-sends its commands once it is back.
+          void room._notJoined().then(() => {
+            if (room._attached && this.pending.has(pending.cmd)) this.publish(pending);
           });
           return;
         }
@@ -571,6 +580,11 @@ export class Room<TView = unknown> {
     return this.joinedOnce;
   }
 
+  /** @internal True while this connection is joined to the room on the server, as far as the client knows. */
+  get _attached(): boolean {
+    return this.attached;
+  }
+
   /** @internal */
   _joined(now: number): void {
     this.attached = true;
@@ -626,6 +640,21 @@ export class Room<TView = unknown> {
     return attempt;
   }
 
+  /**
+   * @internal The gateway answered a command with "not-joined": it does not know this connection is in the room. Joins
+   * again and resolves when that attempt is over. When a join is already waiting for its next try, nothing is started:
+   * the room's commands are sent again once it is back.
+   */
+  _notJoined(): Promise<void> {
+    if (!this.closed) {
+      // Detached, so that a join which fails for a passing reason is tried again (see retryRejoinLater).
+      this.attached = false;
+      if (this.nextRejoinAt !== undefined) return Promise.resolve();
+    }
+
+    return this._rejoin();
+  }
+
   private async rejoinOnce(): Promise<void> {
     try {
       const reply = await this.client.request("join", this.key, "sys/join", { create: false, data: this.joinData });
@@ -665,7 +694,10 @@ export class Room<TView = unknown> {
       // would stay detached, and silently stale, until the connection happened to drop.
       if (this.nextRejoinAt !== undefined && now >= this.nextRejoinAt) {
         this.nextRejoinAt = undefined;
-        void this._rejoin();
+        void this._rejoin().then(() => {
+          // Commands that were waiting for the room go out again now, under their original ids.
+          if (this.attached) this.client._resendCommands(this.key);
+        });
       }
 
       return;
