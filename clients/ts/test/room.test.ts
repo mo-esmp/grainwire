@@ -17,6 +17,7 @@ function roomWith(answerJoin: () => ReplyEnvelope | Promise<ReplyEnvelope>): { r
   const client = {
     _connected: true,
     _forget(): void {},
+    _resendCommands(): void {},
     send(): void {},
     request(kind: string): Promise<ReplyEnvelope> {
       if (kind === "join") {

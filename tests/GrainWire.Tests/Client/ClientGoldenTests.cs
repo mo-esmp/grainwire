@@ -73,6 +73,15 @@ public class ClientGoldenTests
             RoomException error = Assert.IsType<RoomException>(GrainWireClient.ToException(reply));
             Assert.Equal("room-not-found", error.Code);
         },
+        ["reply-resynced.json"] = envelope =>
+        {
+            // The reply names the snapshot that was sent just before it (se, at).
+            ReplyEnvelope reply = Assert.IsType<ReplyEnvelope>(envelope);
+            Assert.Equal(
+                ("0b6e", ReplyStatus.Ok, "resynced", "c1a0", "7f30", (long?)41L),
+                (reply.CommandId, reply.Status, reply.Code, reply.Incarnation, reply.Epoch, reply.At));
+            Assert.Null(GrainWireClient.ToException(reply));
+        },
         ["closed.json"] = envelope =>
         {
             ClosedEnvelope closed = Assert.IsType<ClosedEnvelope>(envelope);

@@ -19,6 +19,15 @@ public sealed record ReplyEnvelope : InboxEnvelope
     /// <summary>The room incarnation (<c>ri</c>), when the room answered.</summary>
     public string? Incarnation { get; init; }
 
+    /// <summary>
+    /// The stream epoch (<c>se</c>) of the snapshot that was sent just before this reply. Null when none was sent.
+    /// With <see cref="At"/> it tells which snapshot the reply speaks of, since that snapshot can be lost on the way.
+    /// </summary>
+    public string? Epoch { get; init; }
+
+    /// <summary>The position (<c>at</c>) of the snapshot that was sent just before this reply. Null when none was sent.</summary>
+    public long? At { get; init; }
+
     /// <summary>The handler's return value (<c>d</c>). <see cref="JsonValueKind.Undefined"/> when there is none.</summary>
     public JsonElement Data { get; init; }
 }

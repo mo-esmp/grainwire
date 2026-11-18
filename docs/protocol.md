@@ -116,6 +116,7 @@ event after it has `seq = at + 1`.
 | `status` | `ok`: done and committed. `rejected`: refused, nothing changed. `error`: could not be processed, nothing changed. |
 | `code` | Machine-readable detail (table below). |
 | `reason` | Human-readable text, when there is one. |
+| `se`, `at` | Present when a snapshot was sent just before this reply (a join, or a sync answered `resynced`): the `se` and `at` of that snapshot. The snapshot can be lost on the way while the reply arrives, so this is how a client tells which snapshot the reply speaks of. |
 | `d` | The handler's return value (commands only, when it returns one). |
 
 Replies are not part of the `seq` stream. A reply and the events caused by the same command
@@ -155,11 +156,23 @@ in the room.
 ## 5. What a client must do
 
 **Joining.** Publish `sys/join`. On `ok`, the snapshot has already arrived. Remember `ri`.
+If no reply arrives in time, or no snapshot follows an `ok`, the outcome is unknown and the
+server may have this connection in the room: publish `sys/leave` before giving up. A gateway
+that never saw the join answers `left` as well.
 
 **Processing the inbox, per room:**
 
 1. A snapshot replaces local state. Set `epoch = se`, `position = at`. Drop buffered events with
-   the same `se` and `seq <= at`; apply the rest in order.
+   the same `se` and `seq <= at`; apply the rest in order. Two kinds of snapshot are late copies
+   and are ignored: one of the current stream with `at < position`, and one of a stream (`ri`
+   and `se`) the client followed before and has left, because a stream that is over does not
+   come back. Remember the last few streams you left. One exception keeps a client from getting
+   stuck: when a `sys/sync` is answered with `resynced`, and the last snapshot to arrive was
+   ignored for belonging to a stream you left, and it is the snapshot the reply names (same
+   `ri`, `se` and `at`), apply it. The server has just said that stream is the current one, so
+   the stream you were following was the late copy. That a snapshot arrived after the request
+   is not enough: the snapshot of the reply can be lost, and a late one of a stream that really
+   is over can arrive in its place. A reply without `se` and `at` overrides nothing.
 2. An event with the current `se`:
    - `seq <= position`: duplicate, drop.
    - `seq == position + 1`: apply, advance.

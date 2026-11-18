@@ -39,6 +39,9 @@ export interface ReplyEnvelope {
   code?: string;
   reason?: string;
   ri?: string;
+  /** With `at`: which snapshot the server sent just before this reply (the snapshot's own `se` and `at`). */
+  se?: string;
+  at?: number;
   d?: unknown;
 }
 

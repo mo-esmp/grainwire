@@ -64,7 +64,8 @@ export interface EventMeta {
 }
 
 type Unsubscribe = () => void;
-type RequestKind = "join" | "sync" | "leave" | "command";
+/** "cleanup" is the leave that follows a join of unknown outcome; it is over once the room is joined anew. */
+type RequestKind = "join" | "sync" | "leave" | "cleanup" | "command";
 
 interface Pending {
   cmd: string;
@@ -148,8 +149,8 @@ export class GrainWireClient {
    * Joins a room (creating it when `create` is set). Resolves once the first snapshot has been processed, so the
    * returned Room has its `view`, `members` and `you`. Joining a room this client is already in returns the same Room.
    *
-   * Rejects with OutcomeUnknownError when the server accepted the join but no snapshot arrived in time. The player may
-   * then be a member of the room; joining again is safe.
+   * Rejects with OutcomeUnknownError when no reply arrived in time, or the server accepted the join but no snapshot
+   * followed. The player may then be a member of the room; joining again is safe.
    */
   async join<TView = unknown>(type: string, id: string, options: JoinOptions = {}): Promise<Room<TView>> {
     const key = `${type}/${id}`;
@@ -173,6 +174,14 @@ export class GrainWireClient {
   private async joinNew<TView>(key: string, type: string, id: string, options: JoinOptions): Promise<Room<TView>> {
     const room = new Room<TView>(this, type, id, options.data, this.settings);
     this.rooms.set(key, room as Room<unknown>);
+
+    // A leave that cleans up after an earlier join of this room must not go out again from here on. The server cannot
+    // tell which join a leave belongs to, so a second copy that arrives after this join would end this membership,
+    // while the room here believes it is joined. The copy already sent is ahead of this join and does no harm.
+    for (const pending of [...this.pending.values()]) {
+      if (pending.kind === "cleanup" && pending.roomKey === key) this.settle(pending, undefined, undefined);
+    }
+
     try {
       const reply = await this.request("join", key, "sys/join", { create: options.create === true, options: options.options, data: options.data });
       interpret(reply);
@@ -184,11 +193,12 @@ export class GrainWireClient {
       return room;
     } catch (error) {
       if (this.rooms.get(key) === (room as Room<unknown>)) this.rooms.delete(key);
-      const joinedOnServer = room._joinedOnce && !room.closed;
+      const outcomeUnknown = error instanceof OutcomeUnknownError && !room.closed;
       room._close("removed", undefined, false);
 
-      // The server attached this connection but the client gave up: stop the room's events from coming here.
-      if (joinedOnServer && this._connected) void this.request("leave", key, "sys/leave", {}, 5_000).catch(() => undefined);
+      // The server may have this connection in the room all the same: the reply was lost, or no snapshot followed
+      // it. Stop the room's events from coming here. A gateway that never saw the join answers "left" as well.
+      if (outcomeUnknown && this._connected) void this.request("cleanup", key, "sys/leave", {}, 5_000).catch(() => undefined);
       throw error;
     }
   }
@@ -248,6 +258,29 @@ export class GrainWireClient {
   send(roomKey: string, path: string, body: Record<string, unknown>): void {
     if (this._state !== "connected") throw new NotConnectedError();
     this.mqtt.publish(`rooms/${roomKey}/${path}`, JSON.stringify({ ...body, cmd: newId(), noreply: true }), { qos: 1 });
+  }
+
+  /**
+   * @internal Sends the commands that still wait for a reply again, under their original command ids: all of them, or
+   * only those of one room. Commands of a room that is not joined at the moment stay back (see waitsForRoom).
+   */
+  _resendCommands(roomKey?: string): void {
+    if (this._state !== "connected") return;
+    for (const pending of this.pending.values()) {
+      if (pending.kind !== "command" || (roomKey !== undefined && pending.roomKey !== roomKey)) continue;
+      if (!this.waitsForRoom(pending)) this.publish(pending);
+    }
+  }
+
+  /**
+   * True for a command whose room is not joined on the server just now, as far as the client knows. Sending it would
+   * only bring back "not-joined"; the room sends it once it is back. A command of a room that has closed has no room
+   * to wait for and is sent, so that its own reply can still arrive.
+   */
+  private waitsForRoom(pending: Pending): boolean {
+    if (pending.kind !== "command") return false;
+    const room = this.rooms.get(pending.roomKey);
+    return room !== undefined && !room._attached;
   }
 
   // ---------------------------------------------------------------- connection
@@ -347,14 +380,14 @@ export class GrainWireClient {
     return typeof token === "function" ? await token() : token;
   }
 
-  /** After a reconnect: join every room again, then re-send what has no reply yet, with the original command ids. */
+  /**
+   * After a reconnect: join every room again, then re-send what has no reply yet, with the original command ids. A
+   * room that could not be joined yet keeps its commands until it is back.
+   */
   private async resume(): Promise<void> {
     const rooms = [...this.rooms.values()].filter((room) => room._needsRejoin);
     await Promise.allSettled(rooms.map((room) => room._rejoin()));
-    if (this._state !== "connected") return;
-    for (const pending of this.pending.values()) {
-      if (pending.kind === "command") this.publish(pending);
-    }
+    this._resendCommands();
   }
 
   private setState(state: ConnectionState): void {
@@ -405,8 +438,9 @@ export class GrainWireClient {
       if (reply.code === "not-joined") {
         const room = this.rooms.get(pending.roomKey);
         if (room) {
-          void room._rejoin().then(() => {
-            if (this.pending.has(pending.cmd)) this.publish(pending);
+          // If the join fails for now, the room tries again later and re-sends its commands once it is back.
+          void room._notJoined().then(() => {
+            if (room._attached && this.pending.has(pending.cmd)) this.publish(pending);
           });
           return;
         }
@@ -425,7 +459,7 @@ export class GrainWireClient {
   private tick(now: number): void {
     for (const pending of [...this.pending.values()]) {
       if (now >= pending.deadline) this.settle(pending, undefined, new OutcomeUnknownError(pending.cmd));
-      else if (this._state === "connected" && now - pending.lastSentAt >= this.settings.retryIntervalMs) this.publish(pending);
+      else if (this._state === "connected" && now - pending.lastSentAt >= this.settings.retryIntervalMs && !this.waitsForRoom(pending)) this.publish(pending);
     }
 
     if (this._state !== "connected") return;
@@ -566,9 +600,9 @@ export class Room<TView = unknown> {
     return !this.closed && !this.attached && this.joinedOnce;
   }
 
-  /** @internal */
-  get _joinedOnce(): boolean {
-    return this.joinedOnce;
+  /** @internal True while this connection is joined to the room on the server, as far as the client knows. */
+  get _attached(): boolean {
+    return this.attached;
   }
 
   /** @internal */
@@ -626,6 +660,21 @@ export class Room<TView = unknown> {
     return attempt;
   }
 
+  /**
+   * @internal The gateway answered a command with "not-joined": it does not know this connection is in the room. Joins
+   * again and resolves when that attempt is over. When a join is already waiting for its next try, nothing is started:
+   * the room's commands are sent again once it is back.
+   */
+  _notJoined(): Promise<void> {
+    if (!this.closed) {
+      // Detached, so that a join which fails for a passing reason is tried again (see retryRejoinLater).
+      this.attached = false;
+      if (this.nextRejoinAt !== undefined) return Promise.resolve();
+    }
+
+    return this._rejoin();
+  }
+
   private async rejoinOnce(): Promise<void> {
     try {
       const reply = await this.client.request("join", this.key, "sys/join", { create: false, data: this.joinData });
@@ -665,7 +714,10 @@ export class Room<TView = unknown> {
       // would stay detached, and silently stale, until the connection happened to drop.
       if (this.nextRejoinAt !== undefined && now >= this.nextRejoinAt) {
         this.nextRejoinAt = undefined;
-        void this._rejoin();
+        void this._rejoin().then(() => {
+          // Commands that were waiting for the room go out again now, under their original ids.
+          if (this.attached) this.client._resendCommands(this.key);
+        });
       }
 
       return;
@@ -702,6 +754,7 @@ export class Room<TView = unknown> {
       const reply = await this.client.request("sync", this.key, "sys/sync", { ri: position.ri, se: position.se, seq: this.engine.ready ? position.seq : -1 }, 5_000);
       if (reply.status === "ok") {
         if (reply.code === "in-sync") this.engine.confirmInSync(Date.now());
+        else if (reply.code === "resynced") this.apply(this.engine.confirmResynced({ ri: reply.ri, se: reply.se, at: reply.at }, Date.now()));
       } else if (reply.code === "room-not-found") {
         this._close("lost", undefined, true);
       } else if (reply.code === "not-member") {
