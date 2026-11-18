@@ -29,6 +29,13 @@ export interface StreamPosition {
   seq: number;
 }
 
+/** Which snapshot the server sent just before a reply, as that reply names it. Fields the reply lacks are undefined. */
+export interface SentSnapshot {
+  ri?: string | undefined;
+  se?: string | undefined;
+  at?: number | undefined;
+}
+
 /**
  * Turns what arrives from the network (possibly late, twice, out of order, or not at all) into what the app may see:
  * a snapshot, then that player's events in order, each exactly once. It does no I/O and owns no timers: callers pass
@@ -38,8 +45,6 @@ export class OrderingEngine {
   private static readonly maxRetired = 16;
   private retired: { ri: string; se: string }[] = [];
   private refused: SnapshotEnvelope | undefined;
-  private received = 0;
-  private lastAccepted = 0;
   private ri: string | undefined;
   private se: string | undefined;
   private position = 0;
@@ -65,15 +70,6 @@ export class OrderingEngine {
     return this.hasBaseline;
   }
 
-  /**
-   * How many snapshots have arrived so far, whatever became of them. Read it when a sync is sent and pass it to
-   * `confirmResynced`: it tells what arrived before the question from what arrived after it, which a clock cannot do
-   * for two things that happen within one of its ticks.
-   */
-  get snapshotsReceived(): number {
-    return this.received;
-  }
-
   /** Call when a snapshot should have arrived (after a successful join) but may have been lost. */
   expectBaseline(now: number): void {
     if (!this.hasBaseline) this.waitingSince ??= now;
@@ -81,7 +77,6 @@ export class OrderingEngine {
 
   receiveSnapshot(snapshot: SnapshotEnvelope, now: number): OrderingAction[] {
     this.lastActivityAt = now;
-    this.received++;
     this.refused = undefined;
     if (this.hasBaseline) {
       if (snapshot.ri === this.ri && snapshot.se === this.se) {
@@ -137,16 +132,17 @@ export class OrderingEngine {
   }
 
   /**
-   * The server answered a sync with "resynced": just before, it sent a snapshot of the stream that is current. If that
-   * snapshot was refused because it belongs to a stream the client had left, the client was wrong about which of the
-   * two streams is over (it had followed a late snapshot of an epoch it had never seen), and the snapshot is applied
-   * after all. `snapshotsReceivedBefore` is what `snapshotsReceived` was when the sync was sent.
+   * The server answered a sync with "resynced": just before, it sent a snapshot of the stream that is current, and the
+   * reply says which one (`sent`). If that very snapshot was refused because it belongs to a stream the client had
+   * left, the client was wrong about which of the two streams is over (it had followed a late snapshot of an epoch it
+   * had never seen), and the snapshot is applied after all.
    */
-  confirmResynced(snapshotsReceivedBefore: number, now: number): OrderingAction[] {
-    // Only the last snapshot to arrive can be the answer (a refused one is forgotten when the next arrives), and only
-    // if it came after the question. When a snapshot was applied since the sync was sent, that one was the answer.
+  confirmResynced(sent: SentSnapshot, now: number): OrderingAction[] {
+    // That a refused snapshot arrived after the sync was sent does not make it the answer: the answer can be lost, and
+    // a late snapshot of the stream that really is over can arrive in its place. So it has to be the snapshot the reply
+    // names, and a reply that names none (an older server) overrides nothing. Only the last snapshot to arrive is kept.
     const refused = this.refused;
-    if (!refused || this.received <= snapshotsReceivedBefore || this.lastAccepted > snapshotsReceivedBefore) return [];
+    if (!refused || refused.ri !== sent.ri || refused.se !== sent.se || refused.at !== sent.at) return [];
     return this.accept(refused, now);
   }
 
@@ -169,7 +165,6 @@ export class OrderingEngine {
 
     this.retired = this.retired.filter((left) => left.ri !== snapshot.ri || left.se !== snapshot.se);
     this.refused = undefined;
-    this.lastAccepted = this.received;
     this.ri = snapshot.ri;
     this.se = snapshot.se;
     this.position = snapshot.at;

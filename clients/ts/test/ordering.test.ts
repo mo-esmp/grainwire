@@ -131,9 +131,8 @@ describe("OrderingEngine", () => {
     // An event of e2 shows that something is wrong. The server answers the sync with e2's snapshot and "resynced".
     expect(engine.receiveEvent(event(6, "e2"), 20)).toEqual([]);
     expect(seqs(engine.tick(300))).toEqual(["sync"]);
-    const asked = engine.snapshotsReceived;
     expect(engine.receiveSnapshot(snapshot(5, "e2"), 320)).toEqual([]);
-    expect(seqs(engine.confirmResynced(asked, 321))).toEqual(["S5", 6]);
+    expect(seqs(engine.confirmResynced({ ri: "i1", se: "e2", at: 5 }, 321))).toEqual(["S5", 6]);
     expect(engine.current).toEqual({ ri: "i1", se: "e2", seq: 6 });
 
     // Now e1 is the stream that was left.
@@ -141,20 +140,29 @@ describe("OrderingEngine", () => {
     expect(engine.tick(5_000)).toEqual([]);
   });
 
-  it("stays away from a stream it left when the sync was answered with another snapshot", () => {
+  it("stays away from a stream it left unless the server names the very snapshot that was refused", () => {
     const engine = new OrderingEngine(options, 0);
     engine.receiveSnapshot(snapshot(0), 0);
     engine.receiveSnapshot(snapshot(0, "e2"), 10);
+    expect(seqs(engine.receiveEvent(event(1, "e2"), 11))).toEqual([1]);
 
-    // Refused before the sync was sent: it cannot be the answer, even when no time passed in between.
+    // The snapshot the server sent with its answer (e2, at 3) was lost. A late one of e1 arrived in its place.
     expect(engine.receiveSnapshot(snapshot(0), 20)).toEqual([]);
-    expect(engine.confirmResynced(engine.snapshotsReceived, 20)).toEqual([]);
+    expect(engine.confirmResynced({ ri: "i1", se: "e2", at: 3 }, 21)).toEqual([]);
+
+    // The same stream is not enough: it has to be the same snapshot.
+    expect(engine.confirmResynced({ ri: "i1", se: "e1", at: 4 }, 22)).toEqual([]);
+    expect(engine.confirmResynced({ ri: "i2", se: "e1", at: 0 }, 23)).toEqual([]);
+
+    // A server that does not say which snapshot it sent is not taken at its word either.
+    expect(engine.confirmResynced({ ri: "i1" }, 24)).toEqual([]);
+    expect(engine.confirmResynced({}, 25)).toEqual([]);
+    expect(engine.current).toEqual({ ri: "i1", se: "e2", seq: 1 });
 
     // The answer was a snapshot of the stream the client follows; a late one of the old stream came right after it.
-    const asked = engine.snapshotsReceived;
     expect(seqs(engine.receiveSnapshot(snapshot(3, "e2"), 220))).toEqual(["S3"]);
     expect(engine.receiveSnapshot(snapshot(0), 225)).toEqual([]);
-    expect(engine.confirmResynced(asked, 230)).toEqual([]);
+    expect(engine.confirmResynced({ ri: "i1", se: "e2", at: 3 }, 230)).toEqual([]);
     expect(engine.current).toEqual({ ri: "i1", se: "e2", seq: 3 });
   });
 
@@ -205,7 +213,7 @@ describe("OrderingEngine", () => {
 type Packet =
   | { kind: "event"; event: EventEnvelope }
   | { kind: "snapshot"; snapshot: SnapshotEnvelope }
-  | { kind: "resynced"; id: number; askedAt: number; snapshotsBefore: number };
+  | { kind: "resynced"; id: number; askedAt: number; se: string; at: number };
 
 interface Step {
   /** 0 = the room restarts, otherwise an event. */
@@ -222,8 +230,8 @@ interface Step {
 
 /**
  * Simulates a room that produces events (and sometimes restarts into a new epoch) and a network that may drop,
- * duplicate and delay anything. Sync requests are answered with a snapshot and then "resynced", which travel the same
- * network.
+ * duplicate and delay anything. Sync requests are answered with a snapshot and then "resynced", which says which
+ * snapshot that was. Both travel the same network, and the snapshot can be lost on it while the reply arrives.
  */
 function simulate(steps: Step[]): {
   delivered: { se: string; seq: number }[];
@@ -250,10 +258,11 @@ function simulate(steps: Step[]): {
   // The server answers a sync with a snapshot and then "resynced". Until the network calms down the answer may take
   // seconds, or a copy of its snapshot may arrive seconds later.
   const answerSync = (reliable: boolean): void => {
-    const answer: Packet = { kind: "snapshot", snapshot: snapshot(position, `e${epoch}`) };
+    const sent = snapshot(position, `e${epoch}`);
+    const answer: Packet = { kind: "snapshot", snapshot: sent };
     const delay = reliable ? 1 : current.duplicate ? 30 : 30 + current.late;
-    inFlight.push({ at: now + delay, packet: answer });
-    inFlight.push({ at: now + delay, packet: { kind: "resynced", id: ++syncs, askedAt: now, snapshotsBefore: engine.snapshotsReceived } });
+    if (reliable || !current.drop) inFlight.push({ at: now + delay, packet: answer });
+    inFlight.push({ at: now + delay, packet: { kind: "resynced", id: ++syncs, askedAt: now, se: sent.se, at: sent.at } });
     if (!reliable && current.duplicate) inFlight.push({ at: now + delay + 7 + current.late, packet: answer });
   };
 
@@ -270,7 +279,7 @@ function simulate(steps: Step[]): {
     if (packet.kind === "snapshot") return engine.receiveSnapshot(packet.snapshot, now);
 
     // Like the client, the simulation waits for one answer at a time, and not for longer than five seconds.
-    return packet.id === syncs && now - packet.askedAt < 5_000 ? engine.confirmResynced(packet.snapshotsBefore, now) : [];
+    return packet.id === syncs && now - packet.askedAt < 5_000 ? engine.confirmResynced({ ri: "i1", se: packet.se, at: packet.at }, now) : [];
   };
 
   const advance = (to: number, reliable: boolean): void => {

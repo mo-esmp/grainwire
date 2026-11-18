@@ -41,6 +41,14 @@ internal static class Envelopes
                 writer.WriteString("ri", reply.Incarnation);
             }
 
+            // Which snapshot went out just before this reply. The snapshot can be lost on the way while the reply
+            // arrives, so the client must be able to tell it from another snapshot that turns up in between.
+            if (reply.Snapshot is not null)
+            {
+                writer.WriteString("se", reply.Snapshot.Epoch);
+                writer.WriteNumber("at", reply.Snapshot.At);
+            }
+
             if (reply.Data is { Length: > 0 })
             {
                 writer.WritePropertyName("d");

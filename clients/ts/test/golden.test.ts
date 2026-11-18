@@ -38,6 +38,7 @@ describe("the protocol's example messages", () => {
     expect(golden<ReplyEnvelope>("reply-ok.json")).toMatchObject({ cmd: "0b6e", status: "ok", d: { accepted: true } });
     expect(golden<ReplyEnvelope>("reply-rejected.json")).toMatchObject({ status: "rejected", code: "rejected", reason: "illegal move" });
     expect(golden<ReplyEnvelope>("reply-error.json")).toMatchObject({ status: "error", code: "room-not-found" });
+    expect(golden<ReplyEnvelope>("reply-resynced.json")).toMatchObject({ status: "ok", code: "resynced", ri: "c1a0", se: "7f30", at: 41 });
     expect(golden<ClosedEnvelope>("closed.json").d).toEqual({ reason: "kicked", message: "bye" });
     expect(golden<EventEnvelope>("presence.json").d).toEqual({ player: "bob", status: "reconnecting", role: "black" });
   });

@@ -62,7 +62,7 @@ async function deliver(envelope: object): Promise<void> {
   await vi.advanceTimersByTimeAsync(0);
 }
 
-function reply(to: Published, answer: Pick<ReplyEnvelope, "status" | "code" | "d">): Promise<void> {
+function reply(to: Published, answer: Pick<ReplyEnvelope, "status" | "code" | "d" | "ri" | "se" | "at">): Promise<void> {
   return deliver({ t: "$reply", room: key, cmd: to.cmd, ...answer });
 }
 
@@ -141,14 +141,36 @@ describe("a room whose server restarted", () => {
     const seen = watch(room);
     await deliver(snapshotAt(7, 70, "e1"));
 
-    // The server answers a sync, sent in the same millisecond, with the snapshot of e2, the epoch that is current, and the room follows it again.
+    // The server answers a sync with the snapshot of e2, the epoch that is current, and says in its reply which
+    // snapshot that was. The room follows e2 again.
     const syncing = room.sync();
     const sync = await untilSent("sys/sync", 1);
     await deliver(snapshotAt(5, 5, "e2"));
-    await reply(sync, { status: "ok", code: "resynced" });
+    await reply(sync, { status: "ok", code: "resynced", ri: "i1", se: "e2", at: 5 });
     await syncing;
     await deliver(changed(6, 6, "e2"));
     expect(seen).toEqual(["S4", "S70", "S5", "E6#6"]);
+  });
+
+  it("stays on its epoch when a sync's own snapshot is lost and a late one of an older epoch arrives in its place", async () => {
+    const { room } = await joined();
+    const seen = watch(room);
+    await deliver(changed(1, 1));
+    await deliver(snapshotAt(0, 10, "e2"));
+    await deliver(changed(1, 11, "e2"));
+
+    // The server answers a sync with a snapshot of e2 (at 3), which is lost. What arrives between the request and
+    // the reply is a snapshot of e1 that was still on its way.
+    const syncing = room.sync();
+    const sync = await untilSent("sys/sync", 1);
+    await deliver(snapshot);
+    await reply(sync, { status: "ok", code: "resynced", ri: "i1", se: "e2", at: 3 });
+    await syncing;
+
+    // The room is still on e2: nothing of e1 is shown a second time.
+    await deliver(changed(1, 1));
+    expect(seen).toEqual(["S0", "E1#1", "S10", "E11#1"]);
+    expect(room.view).toEqual({ value: 10 });
   });
 });
 
@@ -172,6 +194,43 @@ describe("a join that fails", () => {
     await vi.advanceTimersByTimeAsync(1_100);
     await failed;
     expect(sent("sys/leave").length).toBe(1);
+  });
+
+  it("sends its cleanup again while no reply to it arrives", async () => {
+    const client = await connected({ requestTimeoutMs: 1_000 });
+    const failed = expect(client.join("counter", "r1")).rejects.toBeInstanceOf(OutcomeUnknownError);
+    await untilSent("sys/join", 1);
+    await vi.advanceTimersByTimeAsync(1_100);
+    await failed;
+
+    const first = await untilSent("sys/leave", 1);
+    const second = await untilSent("sys/leave", 2);
+    expect(second.cmd).toBe(first.cmd);
+  });
+
+  it("does not send its cleanup again once the app has joined the room anew", async () => {
+    const client = await connected({ requestTimeoutMs: 1_000 });
+    const failed = expect(client.join("counter", "r1")).rejects.toBeInstanceOf(OutcomeUnknownError);
+    await untilSent("sys/join", 1);
+    await vi.advanceTimersByTimeAsync(1_100);
+    await failed;
+    expect(sent("sys/leave").length).toBe(1);
+
+    // The server did the cleanup, but its reply is lost too. The app joins again at once, and this time it works.
+    const before = sent("sys/join").length;
+    const joining = client.join<Counter>("counter", "r1");
+    await deliver(snapshot);
+    await reply(await untilSent("sys/join", before + 1), { status: "ok", code: "joined" });
+    const room = await joining;
+    const seen = watch(room);
+
+    // A second copy of the old cleanup would take the new membership with it. None is sent,
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(sent("sys/leave").length).toBe(1);
+
+    // and the room goes on as joined.
+    await deliver(changed(1, 1));
+    expect(seen).toEqual(["S0", "E1#1"]);
   });
 
   it("has nothing to leave when the server refused it", async () => {

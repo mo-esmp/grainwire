@@ -64,7 +64,8 @@ export interface EventMeta {
 }
 
 type Unsubscribe = () => void;
-type RequestKind = "join" | "sync" | "leave" | "command";
+/** "cleanup" is the leave that follows a join of unknown outcome; it is over once the room is joined anew. */
+type RequestKind = "join" | "sync" | "leave" | "cleanup" | "command";
 
 interface Pending {
   cmd: string;
@@ -173,6 +174,14 @@ export class GrainWireClient {
   private async joinNew<TView>(key: string, type: string, id: string, options: JoinOptions): Promise<Room<TView>> {
     const room = new Room<TView>(this, type, id, options.data, this.settings);
     this.rooms.set(key, room as Room<unknown>);
+
+    // A leave that cleans up after an earlier join of this room must not go out again from here on. The server cannot
+    // tell which join a leave belongs to, so a second copy that arrives after this join would end this membership,
+    // while the room here believes it is joined. The copy already sent is ahead of this join and does no harm.
+    for (const pending of [...this.pending.values()]) {
+      if (pending.kind === "cleanup" && pending.roomKey === key) this.settle(pending, undefined, undefined);
+    }
+
     try {
       const reply = await this.request("join", key, "sys/join", { create: options.create === true, options: options.options, data: options.data });
       interpret(reply);
@@ -189,7 +198,7 @@ export class GrainWireClient {
 
       // The server may have this connection in the room all the same: the reply was lost, or no snapshot followed
       // it. Stop the room's events from coming here. A gateway that never saw the join answers "left" as well.
-      if (outcomeUnknown && this._connected) void this.request("leave", key, "sys/leave", {}, 5_000).catch(() => undefined);
+      if (outcomeUnknown && this._connected) void this.request("cleanup", key, "sys/leave", {}, 5_000).catch(() => undefined);
       throw error;
     }
   }
@@ -741,12 +750,11 @@ export class Room<TView = unknown> {
     if (this.syncing || this.closed || !this.attached) return;
     this.syncing = true;
     try {
-      const snapshotsBefore = this.engine.snapshotsReceived;
       const position = this.engine.current;
       const reply = await this.client.request("sync", this.key, "sys/sync", { ri: position.ri, se: position.se, seq: this.engine.ready ? position.seq : -1 }, 5_000);
       if (reply.status === "ok") {
         if (reply.code === "in-sync") this.engine.confirmInSync(Date.now());
-        else if (reply.code === "resynced") this.apply(this.engine.confirmResynced(snapshotsBefore, Date.now()));
+        else if (reply.code === "resynced") this.apply(this.engine.confirmResynced({ ri: reply.ri, se: reply.se, at: reply.at }, Date.now()));
       } else if (reply.code === "room-not-found") {
         this._close("lost", undefined, true);
       } else if (reply.code === "not-member") {

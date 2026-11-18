@@ -53,6 +53,12 @@ public class WireFormatTests
         Assert.Equal(Golden("reply-ok.json"), Encoding.UTF8.GetString(Envelopes.Reply(Room, "0b6e", ok)));
         Assert.Equal(Golden("reply-rejected.json"), Encoding.UTF8.GetString(Envelopes.Reply(Room, "0b6e", RoomReply.Rejected(Wire.Codes.Rejected, "illegal move"))));
         Assert.Equal(Golden("reply-error.json"), Encoding.UTF8.GetString(Envelopes.Reply(Room, "0b6e", RoomReply.Error(Wire.Codes.RoomNotFound))));
+
+        // A reply that follows a snapshot says which one: the snapshot can be lost on the way while the reply arrives.
+        RoomReply resynced = RoomReply.Ok(Wire.Codes.Resynced);
+        resynced.Incarnation = "c1a0";
+        resynced.Snapshot = new SnapshotData { Incarnation = "c1a0", Epoch = "7f30", At = 41 };
+        Assert.Equal(Golden("reply-resynced.json"), Encoding.UTF8.GetString(Envelopes.Reply(Room, "0b6e", resynced)));
     }
 
     [Fact]
