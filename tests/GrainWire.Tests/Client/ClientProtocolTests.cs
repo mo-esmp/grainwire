@@ -350,6 +350,32 @@ public sealed class ClientProtocolTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_command_of_a_closed_room_is_still_sent_again_while_the_same_room_is_being_joined_anew()
+    {
+        GrainWireClient client = await Connect(options => options.RetryInterval = TimeSpan.FromMilliseconds(200));
+        Room<Counter> room = await Join(client);
+
+        Task<string> closing = room.RequestAsync<string>("close");
+        Published close = await _gateway.Next("cmd/close");
+        await _gateway.Closed(client.ClientId, "closed", "done");
+        await Until(() => room.IsClosed, "the room to close");
+
+        // A new room under the same key, not joined yet. The command belongs to the closed one and does not wait for it.
+        Task<Room<Counter>> again = client.JoinAsync<Counter>("counter", "r1");
+        Published join = await _gateway.Next("sys/join");
+        Published resent = await _gateway.Next("cmd/close", timeoutMs: 2000);
+        Assert.Equal(close.CommandId, resent.CommandId);
+        Assert.False(again.IsCompleted);
+
+        await _gateway.Reply(client.ClientId, close.CommandId, d: "\"bye\"");
+        Assert.Equal("bye", await closing.WaitAsync(s_patience));
+
+        await _gateway.Snapshot(client.ClientId, at: 0, value: 0, se: "e5", ri: "i2");
+        await _gateway.Reply(client.ClientId, join.CommandId, code: "joined");
+        Assert.NotSame(room, await again.WaitAsync(s_patience));
+    }
+
+    [Fact]
     public async Task A_request_without_a_reply_is_sent_again_with_the_same_command_id()
     {
         GrainWireClient client = await Connect(options => options.RetryInterval = TimeSpan.FromMilliseconds(150));

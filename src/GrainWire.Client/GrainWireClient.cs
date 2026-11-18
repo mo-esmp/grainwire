@@ -265,9 +265,9 @@ public sealed class GrainWireClient : IAsyncDisposable
     /// <summary>
     /// Sends a request. <paramref name="settled"/> is called once, under the lock, with the reply (whatever its status)
     /// or with the reason there is none. Returns null, without calling it, when the request cannot be sent because
-    /// there is no connection.
+    /// there is no connection. A command names the room it is sent through in <paramref name="room"/>.
     /// </summary>
-    internal PendingRequest? RequestLocked(RequestKind kind, string roomKey, string path, Func<string, byte[]> payload, TimeSpan? timeout, Action<ReplyEnvelope?, Exception?> settled)
+    internal PendingRequest? RequestLocked(RequestKind kind, string roomKey, string path, Func<string, byte[]> payload, TimeSpan? timeout, Action<ReplyEnvelope?, Exception?> settled, Room? room = null)
     {
         // A join may be registered while the connection is down: it is sent once the connection is back.
         if (_disposed || (_state != ConnectionState.Connected && kind != RequestKind.Join))
@@ -278,7 +278,7 @@ public sealed class GrainWireClient : IAsyncDisposable
         string commandId = NewCommandId();
         long now = Now;
         long deadline = now + (long)(timeout ?? Options.RequestTimeout).TotalMilliseconds;
-        PendingRequest pending = new(commandId, kind, roomKey, Wire.RoomTopic(roomKey, path), payload(commandId), deadline, settled);
+        PendingRequest pending = new(commandId, kind, roomKey, Wire.RoomTopic(roomKey, path), payload(commandId), deadline, settled) { Room = room };
         _pending.Add(commandId, pending);
         PublishLocked(pending);
         return pending;
@@ -597,10 +597,11 @@ public sealed class GrainWireClient : IAsyncDisposable
     /// <summary>
     /// True for a command whose room is not joined on the server just now, as far as the client knows. Sending it would
     /// only bring back "not-joined"; the room sends it once it is back. A command of a room that has closed has no room
-    /// to wait for and is sent, so that its own reply can still arrive.
+    /// to wait for and is sent, so that its own reply can still arrive: also when the same room has been joined anew
+    /// since, because that is another room object, which the command was not sent through.
     /// </summary>
     private bool WaitsForRoomLocked(PendingRequest pending) =>
-        pending.Kind == RequestKind.Command && _rooms.TryGetValue(pending.RoomKey, out Room? room) && !room.IsAttachedLocked;
+        pending.Room is { IsAttachedLocked: false } room && _rooms.TryGetValue(room.Key, out Room? known) && ReferenceEquals(known, room);
 
     private void SetStateLocked(ConnectionState state)
     {
