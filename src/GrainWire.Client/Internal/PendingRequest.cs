@@ -11,6 +11,12 @@ internal sealed class PendingRequest(string commandId, RequestKind kind, string 
 
     public string RoomKey { get; } = roomKey;
 
+    /// <summary>
+    /// The room a command was sent through; null for every other kind of request. A later room with the same key is
+    /// another room: the command does not belong to it.
+    /// </summary>
+    public Room? Room { get; init; }
+
     public string Topic { get; } = topic;
 
     public byte[] Payload { get; } = payload;

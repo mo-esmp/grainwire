@@ -554,7 +554,7 @@ public abstract class Room
                 {
                     completion.TrySetResult(reply!.Data);
                 }
-            })!;
+            }, this)!;
         }
 
         using (cancellationToken.Register(() => Client.Abandon(pending, new OperationCanceledException(cancellationToken))))
