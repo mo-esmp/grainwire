@@ -57,6 +57,8 @@ internal static class InboxParser
         Code = Text(root, "code"),
         Reason = Text(root, "reason"),
         Incarnation = Text(root, "ri"),
+        Epoch = Text(root, "se"),
+        At = Number(root, "at"),
         Data = Data(root),
     };
 
