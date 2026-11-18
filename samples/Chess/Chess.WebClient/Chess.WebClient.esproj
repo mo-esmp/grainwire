@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.VisualStudio.JavaScript.Sdk/1.0.6887863">
+  <PropertyGroup>
+    <BuildCommand>npm run build</BuildCommand>
+    <StartupCommand>npm run dev</StartupCommand>
+  </PropertyGroup>
+  <!-- On CI the solution build must not run npm: the page needs clients/ts built first,
+       and only the chess-sample job does that. That job builds the page with npm directly. -->
+  <PropertyGroup Condition="'$(CI)' == 'true'">
+    <ShouldRunNpmInstall>false</ShouldRunNpmInstall>
+    <ShouldRunBuildScript>false</ShouldRunBuildScript>
+  </PropertyGroup>
+</Project>

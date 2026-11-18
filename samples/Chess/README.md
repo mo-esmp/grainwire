@@ -2,10 +2,10 @@
 
 An online chess game in two small parts:
 
-- [`Server/ChessGameGrain.cs`](Server/ChessGameGrain.cs): the game. Seats, turns, clocks, resigning and
+- [`Chess.Server/Game/ChessGameGrain.cs`](Chess.Server/Game/ChessGameGrain.cs): the game. Seats, turns, clocks, resigning and
   forfeits, in about 100 lines. The rules of chess come from the MIT-licensed
   [Gera.Chess](https://www.nuget.org/packages/Gera.Chess) library.
-- [`Web/src/main.ts`](Web/src/main.ts): the browser. It draws what the server sends and sends moves.
+- [`Chess.WebClient/src/main.ts`](Chess.WebClient/src/main.ts): the browser. It draws what the server sends and sends moves.
 
 Everything else (connections, ordering, presence, reconnecting, saving) is GrainWire.
 
@@ -13,20 +13,20 @@ Everything else (connections, ordering, presence, reconnecting, saving) is Grain
 
 You need the .NET 10 SDK and Node.js 20 or later.
 
-Build the browser client once (it is written into `Server/wwwroot`):
+Build the browser client once (it is written into `Chess.Server/wwwroot`):
 
 ```bash
 cd clients/ts && npm ci && npm run build
 ```
 
 ```bash
-cd samples/Chess/Web && npm ci && npm run build
+cd samples/Chess/Chess.WebClient && npm ci && npm run build
 ```
 
 Start the server:
 
 ```bash
-dotnet run --project samples/Chess/Server
+dotnet run --project samples/Chess/Chess.Server
 ```
 
 Open <http://localhost:5200>, create a game, and open the invite link in a second browser (or a
@@ -51,6 +51,6 @@ private window) under a different name. A third visitor watches.
 
 ## Develop
 
-`npm run dev` in `Web/` serves the site with hot reload and forwards `/mqtt` to the server on
+`npm run dev` in `Chess.WebClient/` serves the site with hot reload and forwards `/mqtt` to the server on
 port 5200. `npm run e2e` builds the site and plays a game in two real browsers with Playwright
 (run `npx playwright install chromium` once first).

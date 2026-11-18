@@ -1,0 +1,25 @@
+{
+  "name": "chess.webclient",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "e2e": "npm run build && playwright test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@grainwire/client": "file:../../../clients/ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.0",
+    "@types/node": "^26.6.6",
+    "eslint": "^10.15.0",
+    "tslint": "6.1.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}

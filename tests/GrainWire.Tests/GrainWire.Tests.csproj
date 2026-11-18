@@ -15,10 +15,8 @@
     <ProjectReference Include="../../src/GrainWire.Abstractions/GrainWire.Abstractions.csproj" />
     <ProjectReference Include="../../src/GrainWire.Client/GrainWire.Client.csproj" />
     <ProjectReference Include="../../src/GrainWire.Server/GrainWire.Server.csproj" />
+    <ProjectReference Include="../../samples/Chess/Chess.Server/Chess.Server.csproj" />
     <Using Include="Xunit" />
-    <!-- Excluded while the chess sample is being rewritten: these tests need its ChessRules class.
-         Remove this line and restore the project reference once samples/Chess/Chess.Server has ChessRules. -->
-    <Compile Remove="ChessSampleTests.cs" />
     <None Include="../../docs/protocol-golden/**/*.json" Link="golden/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -1,4 +1,4 @@
-﻿using ChessSample.Server;
+﻿using ChessFromScratch.Server.Game;
 
 namespace GrainWire.Tests;
 

@@ -56,12 +56,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: dotnet build samples/Chess/Server
+      - run: dotnet build samples/Chess/Chess.Server
       - run: npm ci && npm run build
         working-directory: clients/ts
       - run: npm ci
-        working-directory: samples/Chess/Web
+        working-directory: samples/Chess/Chess.WebClient
       - run: npx playwright install --with-deps chromium
-        working-directory: samples/Chess/Web
+        working-directory: samples/Chess/Chess.WebClient
       - run: npm run e2e
-        working-directory: samples/Chess/Web
+        working-directory: samples/Chess/Chess.WebClient
