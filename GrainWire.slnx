@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/GrainWire.Abstractions/GrainWire.Abstractions.csproj" />
+    <Project Path="src/GrainWire.Client/GrainWire.Client.csproj" />
     <Project Path="src/GrainWire.Server/GrainWire.Server.csproj" />
   </Folder>
   <Folder Name="/assets/">

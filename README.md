@@ -58,6 +58,7 @@ await room.request("move", { from: "e2", to: "e4" }); // resolves once the move 
 | `GrainWire.Server` (NuGet) | The host: the MQTT gateway, plus everything below. |
 | `GrainWire.Abstractions` (NuGet) | Projects that only contain room grains: `RoomGrain<TState>` and silo registration. |
 | `@grainwire/client` (npm) | Browsers. TypeScript, built on MQTT.js. |
+| `GrainWire.Client` (NuGet) | .NET apps: desktop, mobile, services, bots, tests. Built on MQTTnet; no Orleans dependency. |
 
 Requires .NET 10 and Orleans 10. The broker is [MQTTnet](https://github.com/dotnet/MQTTnet) 5.
 
@@ -77,8 +78,8 @@ Requires .NET 10 and Orleans 10. The broker is [MQTTnet](https://github.com/dotn
 - Rooms of up to about 1,000 members.
 - Not for fast action games that need many state updates per second.
 - Events are not stored. A client that missed events catches up from a snapshot of the state.
-- Browser client only. A .NET client is planned; the [protocol](docs/protocol.md) is documented
-  so that other clients can be written.
+- Clients for browsers (TypeScript) and .NET only. The [protocol](docs/protocol.md) is
+  documented so that clients for other platforms can be written.
 
 ## Building
 
