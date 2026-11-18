@@ -1,4 +1,11 @@
 <Solution>
+  <Folder Name="/samples/Chess/">
+    <Project Path="samples/Chess/Chess.Server/Chess.Server.csproj" Id="36a8abe2-4d20-4432-8510-f81ae3e5ed59" />
+    <Project Path="samples/Chess/Chess.WebClient/Chess.WebClient.esproj">
+      <Build />
+      <Deploy />
+    </Project>
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/GrainWire.Abstractions/GrainWire.Abstractions.csproj" />
     <Project Path="src/GrainWire.Client/GrainWire.Client.csproj" />
@@ -16,9 +23,7 @@
   <Folder Name="/bench/">
     <Project Path="bench/GrainWire.Bench/GrainWire.Bench.csproj" />
   </Folder>
-  <Folder Name="/samples/">
-    <Project Path="samples/Chess/Server/Chess.Server.csproj" />
-  </Folder>
+  <Folder Name="/samples/" />
   <Folder Name="/tests/">
     <Project Path="tests/GrainWire.Tests/GrainWire.Tests.csproj" />
     <Project Path="tests/GrainWire.TestHost/GrainWire.TestHost.csproj" />
