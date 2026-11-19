@@ -413,13 +413,27 @@ static async Task<int> RunIdle(int connections, int factor, int roomsPerConnecti
             Line();
             Line("| Owner | Bytes per connection |");
             Line("|---|---|");
+            double PerConnection(long smallBytes, long largeBytes) => Slope.Between(small.Connections / 2, smallBytes, large.Connections / 2, largeBytes).PerConnection;
+            double attributed = 0;
             foreach (string bucket in HeapAttribution.Buckets)
             {
-                Line($"| {bucket} | {Slope.Between(small.Connections / 2, smallBuckets[bucket], large.Connections / 2, largeBuckets[bucket]).PerConnection:N0} |");
+                double perConnection = PerConnection(smallBuckets[bucket], largeBuckets[bucket]);
+                attributed += perConnection;
+                Line($"| {bucket} | {perConnection:N0} |");
+            }
+
+            string smallReport = await File.ReadAllTextAsync(smallText);
+            string largeReport = await File.ReadAllTextAsync(largeText);
+            if (HeapAttribution.TotalOf(smallReport) is long smallTotal && HeapAttribution.TotalOf(largeReport) is long largeTotal)
+            {
+                double total = PerConnection(smallTotal, largeTotal);
+                Line($"| Difference from the dumps' own total (strings and arrays are approximate) | {total - attributed:N0} |");
+                Line($"| **The dumps' own total** | **{total:N0}** |");
             }
 
             Line();
             Line("A type is counted under its own namespace, so the strings, arrays and tasks that belong to a library's objects are under \"Other\". Compare with the floor to see how much of \"Other\" comes with any WebSocket.");
+            Line("For strings and arrays the dump's report gives the size of one object, not the average, so their rows are approximate; the difference row shows by how much the rows miss the dumps' own total.");
         }
     }
 

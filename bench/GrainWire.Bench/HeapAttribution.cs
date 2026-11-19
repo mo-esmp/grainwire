@@ -49,8 +49,9 @@ public static partial class HeapAttribution
 
     /// <summary>Bytes per bucket, from the text that "dotnet-gcdump report" prints.</summary>
     /// <remarks>
-    /// A type line is "average bytes of one object, count, type name, [module]"; the line stands for bytes × count. Every
-    /// bucket is present, with 0 if nothing fell into it.
+    /// A type line is "bytes of one object, count, type name, [module]"; the line is counted as bytes × count, which is
+    /// exact for fixed-size classes and approximate for strings and arrays (see <see cref="TotalOf"/>). Every bucket is
+    /// present, with 0 if nothing fell into it.
     /// </remarks>
     public static IReadOnlyDictionary<string, long> Parse(string report)
     {
@@ -69,6 +70,21 @@ public static partial class HeapAttribution
         return buckets;
     }
 
+    /// <summary>The heap's own total, from the report's "GC Heap bytes" line; null if there is none.</summary>
+    /// <remarks>
+    /// For fixed-size classes the first column of a type line is the size of every object of the type, but for strings and
+    /// arrays it is the size of one of them (an empty string shows as 22 bytes), so bytes × count does not add up to the
+    /// heap. The header does, and the difference between the two is printed beside the buckets.
+    /// </remarks>
+    public static long? TotalOf(string report)
+    {
+        Match match = HeapTotalLine().Match(report);
+        return match.Success ? long.Parse(match.Groups["bytes"].Value, NumberStyles.AllowThousands, CultureInfo.InvariantCulture) : null;
+    }
+
     [GeneratedRegex(@"^\s*(?<bytes>\d[\d,]*)\s+(?<count>\d[\d,]*)\s+(?<type>\S.*?)(?:\s+\[[^\]]*\])?\s*$")]
     private static partial Regex TypeLine();
+
+    [GeneratedRegex(@"^\s*(?<bytes>\d[\d,]*)\s+GC Heap bytes\s*$", RegexOptions.Multiline)]
+    private static partial Regex HeapTotalLine();
 }
