@@ -1,5 +1,7 @@
 ﻿using System.Diagnostics;
+using System.Globalization;
 using System.Net;
+using System.Reflection;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -13,18 +15,25 @@ using GrainWire.Server;
 //   dotnet run -c Release --project bench/GrainWire.Bench -- run [--rooms 5000] [--members 1000] [--seconds 30] [--out docs/benchmarks-latest.md]
 //
 // "run" starts three processes of this same program (one Orleans silo and two standalone gateways), drives them
-// with real MQTT clients over WebSockets, and prints the results. The other two modes are those processes.
+// with real MQTT clients over WebSockets, and prints the results. "silo" and "gateway" are those processes.
+//
+//   dotnet run -c Release --project bench/GrainWire.Bench -- idle [--connections 3000] [--factor 4] [--rooms-per-connection 1] [--out <file>]
+//
+// "idle" measures what an idle connection costs the gateways, as the slope between two connection counts, each in
+// fresh processes. See docs/specs/2026-11-19-grainwire-on-mqttwire-design.md, section 6.
 
 string mode = args.Length > 0 ? args[0] : "run";
 int Arg(string name, int fallback) => Array.IndexOf(args, name) is int i and >= 0 && i + 1 < args.Length ? int.Parse(args[i + 1]) : fallback;
 string? Text(string name) => Array.IndexOf(args, name) is int i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+bool Flag(string name) => Array.IndexOf(args, name) >= 0;
 
 return mode switch
 {
     "silo" => await RunSilo(Arg("--http", 0), Arg("--silo-port", 0), Arg("--gateway-port", 0)),
-    "gateway" => await RunGateway(Arg("--http", 0), Arg("--gateway-port", 0)),
+    "gateway" => await RunGateway(Arg("--http", 0), Arg("--gateway-port", 0), Flag("--claims")),
     "run" => await RunBenchmark(Arg("--rooms", 5000), Arg("--members", 1000), Arg("--seconds", 30), Text("--out")),
-    _ => Fail($"Unknown mode '{mode}'. Use: run | silo | gateway."),
+    "idle" => await RunIdle(Arg("--connections", 3000), Arg("--factor", 4), Arg("--rooms-per-connection", 1), Text("--out")),
+    _ => Fail($"Unknown mode '{mode}'. Use: run | idle | silo | gateway."),
 };
 
 static int Fail(string message)
@@ -70,7 +79,7 @@ static async Task<int> RunSilo(int http, int siloPort, int gatewayPort)
     return 0;
 }
 
-static async Task<int> RunGateway(int http, int orleansGatewayPort)
+static async Task<int> RunGateway(int http, int orleansGatewayPort, bool withClaims)
 {
     WebApplicationBuilder builder = NewBuilder(http);
     builder.UseOrleansClient(client =>
@@ -78,6 +87,12 @@ static async Task<int> RunGateway(int http, int orleansGatewayPort)
         client.UseLocalhostClustering(orleansGatewayPort, "gw-bench", "gw-bench");
         client.AddGrainWireClient();
     });
+    if (withClaims)
+    {
+        // Before AddGrainWireGateway, which only adds the development authenticator if none is registered.
+        builder.Services.AddSingleton<IConnectionAuthenticator, BenchAuthenticator>();
+    }
+
     builder.Services.AddGrainWireGateway(options => options.RoomCreationsPerMinute = int.MaxValue);
     WebApplication app = builder.Build();
     app.MapGrainWire();
@@ -322,7 +337,116 @@ static async Task BigRoom(int members, int seconds, string[] urls, int[] stats, 
     await Parallel.ForEachAsync(clients, new ParallelOptions { MaxDegreeOfParallelism = 64 }, async (client, _) => await client.DisposeAsync());
 }
 
+// ---------------------------------------------------------------- idle connections (step 0)
+
+static async Task<int> RunIdle(int connections, int factor, int roomsPerConnection, string? outFile)
+{
+    CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+    StringBuilder report = new();
+    void Line(string text = "")
+    {
+        Console.WriteLine(text);
+        report.AppendLine(text);
+    }
+
+    Line(Machine());
+    IdleStates small, large;
+    try
+    {
+        small = await IdleRun(connections, roomsPerConnection, Line);
+        large = await IdleRun(connections * factor, roomsPerConnection, Line);
+    }
+    catch (Exception e)
+    {
+        Console.Error.WriteLine($"The idle run stopped: {e.Message}");
+        return 1;
+    }
+
+    Fit Heap(Func<IdleStates, HeapSample> state) => Slope.Between(small.Connections, state(small).HeapBytes, large.Connections, state(large).HeapBytes);
+    Fit WorkingSet(Func<IdleStates, HeapSample> state) => Slope.Between(small.Connections, state(small).WorkingSetBytes, large.Connections, state(large).WorkingSetBytes);
+    void Row(string name, Func<IdleStates, HeapSample> state) =>
+        Line($"| {name} | {Heap(state).PerConnection:N0} | {Mb(Heap(state).Fixed)} | {WorkingSet(state).PerConnection:N0} |");
+
+    int RoomsOf(IdleStates states) => states.Connections / 2 * roomsPerConnection;
+    Fit silo = Slope.Between(RoomsOf(small), small.SiloJoined.HeapBytes, RoomsOf(large), large.SiloJoined.HeapBytes);
+
+    Line();
+    Line($"Idle connections on today's gateway (MQTTnet {MqttNetVersion()}): {small.Connections:N0} and {large.Connections:N0} connections, {roomsPerConnection} room(s) of two per pair, three claims each.");
+    Line("Per connection is the slope between the two counts. \"Fixed\" is the line's value at no connections.");
+    Line();
+    Line("| State | Live managed bytes per connection | Fixed (MB) | Working set per connection |");
+    Line("|---|---|---|---|");
+    Row("1. Connected and subscribed", s => s.Connected);
+    Row("2. Joined", s => s.Joined);
+    Row("3. Active, then idle", s => s.ActiveThenIdle);
+    Row("2 again, after churn", s => s.JoinedAgain);
+    Line();
+    Line($"- Kept after activity, per connection (state 3 − state 2): {Heap(s => s.ActiveThenIdle).PerConnection - Heap(s => s.Joined).PerConnection:N0} bytes");
+    Line($"- After churn (state 4), live managed bytes above the baseline: {Mb(small.AfterChurn.HeapBytes - small.Baseline.HeapBytes)} MB and {Mb(large.AfterChurn.HeapBytes - large.Baseline.HeapBytes)} MB");
+    Line($"- Silo, per room in state 2: {silo.PerConnection:N0} bytes");
+
+    if (outFile is not null)
+    {
+        await File.WriteAllTextAsync(outFile, report.ToString());
+    }
+
+    return 0;
+}
+
+/// <summary>One run of the idle workload in fresh processes: one silo and two gateways that give every connection three claims.</summary>
+static async Task<IdleStates> IdleRun(int connections, int roomsPerConnection, Action<string> log)
+{
+    log($"Run with {connections:N0} connections:");
+    int siloHttp = FreePort();
+    int orleansGateway = FreePort();
+    int[] gatewayHttp = [FreePort(), FreePort()];
+    List<(string Name, Process Process)> processes = [("silo", Spawn($"silo --http {siloHttp} --silo-port {FreePort()} --gateway-port {orleansGateway}"))];
+    try
+    {
+        await WaitForHealth(siloHttp);
+        processes.Add(("first gateway", Spawn($"gateway --http {gatewayHttp[0]} --gateway-port {orleansGateway} --claims")));
+        processes.Add(("second gateway", Spawn($"gateway --http {gatewayHttp[1]} --gateway-port {orleansGateway} --claims")));
+        await Task.WhenAll(WaitForHealth(gatewayHttp[0]), WaitForHealth(gatewayHttp[1]));
+        IdleSetup setup = new(connections, roomsPerConnection, [.. gatewayHttp.Select(p => $"ws://127.0.0.1:{p}/mqtt")], gatewayHttp, siloHttp, AtJoined: null);
+        return await IdleWorkload.RunAsync(setup, log);
+    }
+    catch (Exception e) when (processes.FirstOrDefault(p => p.Process.HasExited) is { Process: not null } gone)
+    {
+        throw new InvalidOperationException($"the {gone.Name} (process {gone.Process.Id}) exited during the run. {e.Message}", e);
+    }
+    finally
+    {
+        Kill(processes.Select(p => p.Process));
+    }
+}
+
 // ---------------------------------------------------------------- helpers
+
+static string Machine() =>
+    $"Machine: {RuntimeInformation.OSDescription}, {Environment.ProcessorCount} logical cores, {GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1L << 30)} GB RAM, .NET {Environment.Version}";
+
+static string MqttNetVersion() =>
+    typeof(MQTTnet.Server.MqttServer).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0] ?? "unknown";
+
+static string Mb(double bytes) => (bytes / 1024.0 / 1024.0).ToString("F1", CultureInfo.InvariantCulture);
+
+static void Kill(IEnumerable<Process> processes)
+{
+    foreach (Process process in processes)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch
+        {
+            // Already gone.
+        }
+    }
+}
 
 static string Kb(long bytes, int count) => (bytes / 1024.0 / Math.Max(1, count)).ToString("F1");
 
