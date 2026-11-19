@@ -4,6 +4,8 @@ using System.Net;
 using System.Reflection;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using GrainWire;
@@ -21,6 +23,10 @@ using GrainWire.Server;
 //
 // "idle" measures what an idle connection costs the gateways, as the slope between two connection counts, each in
 // fresh processes. See docs/specs/2026-11-19-grainwire-on-mqttwire-design.md, section 6.
+//
+//   dotnet run -c Release --project bench/GrainWire.Bench -- floor-run [--connections 3000] [--factor 4] [--tls] [--out <file>]
+//
+// "floor-run" measures the same idle connections against a bare WebSocket endpoint, the "floor" mode.
 
 string mode = args.Length > 0 ? args[0] : "run";
 int Arg(string name, int fallback) => Array.IndexOf(args, name) is int i and >= 0 && i + 1 < args.Length ? int.Parse(args[i + 1]) : fallback;
@@ -33,7 +39,9 @@ return mode switch
     "gateway" => await RunGateway(Arg("--http", 0), Arg("--gateway-port", 0), Flag("--claims")),
     "run" => await RunBenchmark(Arg("--rooms", 5000), Arg("--members", 1000), Arg("--seconds", 30), Text("--out")),
     "idle" => await RunIdle(Arg("--connections", 3000), Arg("--factor", 4), Arg("--rooms-per-connection", 1), Text("--out")),
-    _ => Fail($"Unknown mode '{mode}'. Use: run | idle | silo | gateway."),
+    "floor" => await RunFloor(Arg("--http", 0), Flag("--tls")),
+    "floor-run" => await RunFloorBenchmark(Arg("--connections", 3000), Arg("--factor", 4), Flag("--tls"), Text("--out")),
+    _ => Fail($"Unknown mode '{mode}'. Use: run | idle | floor-run | silo | gateway | floor."),
 };
 
 static int Fail(string message)
@@ -420,6 +428,104 @@ static async Task<IdleStates> IdleRun(int connections, int roomsPerConnection, A
     }
 }
 
+// ---------------------------------------------------------------- the floor (step 0)
+
+static async Task<int> RunFloor(int http, bool tls)
+{
+    WebApplicationBuilder builder = NewBuilder(http);
+    if (tls)
+    {
+        X509Certificate2 certificate = SelfSignedCertificate();
+        builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, http, listen => listen.UseHttps(certificate)));
+    }
+
+    WebApplication app = builder.Build();
+    FloorServer.Map(app);
+    MapStats(app);
+    await app.RunAsync();
+    return 0;
+}
+
+/// <summary>RSA 2,048, CN=localhost. Exported to PKCS#12 and loaded again, because SslStream cannot use an ephemeral key on Windows.</summary>
+static X509Certificate2 SelfSignedCertificate()
+{
+    using RSA key = RSA.Create(2048);
+    CertificateRequest request = new("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+    SubjectAlternativeNameBuilder names = new();
+    names.AddDnsName("localhost");
+    names.AddIpAddress(IPAddress.Loopback);
+    request.CertificateExtensions.Add(names.Build());
+    using X509Certificate2 ephemeral = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+    return X509CertificateLoader.LoadPkcs12(ephemeral.Export(X509ContentType.Pkcs12), null);
+}
+
+static async Task<int> RunFloorBenchmark(int connections, int factor, bool tls, string? outFile)
+{
+    CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+    StringBuilder report = new();
+    void Line(string text = "")
+    {
+        Console.WriteLine(text);
+        report.AppendLine(text);
+    }
+
+    Line(Machine());
+    FloorStates small, large;
+    try
+    {
+        small = await FloorRun(connections, tls, Line);
+        large = await FloorRun(connections * factor, tls, Line);
+    }
+    catch (Exception e)
+    {
+        Console.Error.WriteLine($"The floor run stopped: {e.Message}");
+        return 1;
+    }
+
+    Fit Heap(Func<FloorStates, HeapSample> state) => Slope.Between(small.Connections, state(small).HeapBytes, large.Connections, state(large).HeapBytes);
+    Fit WorkingSet(Func<FloorStates, HeapSample> state) => Slope.Between(small.Connections, state(small).WorkingSetBytes, large.Connections, state(large).WorkingSetBytes);
+    void Row(string name, Func<FloorStates, HeapSample> state) =>
+        Line($"| {name} | {Heap(state).PerConnection:N0} | {Mb(Heap(state).Fixed)} | {WorkingSet(state).PerConnection:N0} |");
+
+    Line();
+    Line($"The floor: a bare ASP.NET Core WebSocket endpoint (sub-protocol mqtt, keep-alive off, zero-byte read){(tls ? ", with TLS in Kestrel" : "")}. {small.Connections:N0} and {large.Connections:N0} idle connections.");
+    Line();
+    Line("| State | Live managed bytes per connection | Fixed (MB) | Working set per connection |");
+    Line("|---|---|---|---|");
+    Row("Connected", s => s.Connected);
+    Row("Connected again, after churn", s => s.ConnectedAgain);
+    Line();
+    Line($"- After churn, live managed bytes above the baseline: {Mb(small.AfterChurn.HeapBytes - small.Baseline.HeapBytes)} MB and {Mb(large.AfterChurn.HeapBytes - large.Baseline.HeapBytes)} MB");
+
+    if (outFile is not null)
+    {
+        await File.WriteAllTextAsync(outFile, report.ToString());
+    }
+
+    return 0;
+}
+
+/// <summary>One run of the floor workload against a fresh floor process.</summary>
+static async Task<FloorStates> FloorRun(int connections, bool tls, Action<string> log)
+{
+    log($"Run with {connections:N0} connections:");
+    int port = FreePort();
+    Process server = Spawn($"floor --http {port}{(tls ? " --tls" : "")}");
+    try
+    {
+        await WaitForHealth(port, tls ? "https" : "http");
+        return await FloorWorkload.RunAsync(connections, $"{(tls ? "wss" : "ws")}://127.0.0.1:{port}/mqtt", port, log);
+    }
+    catch (Exception e) when (server.HasExited)
+    {
+        throw new InvalidOperationException($"the floor server (process {server.Id}) exited during the run. {e.Message}", e);
+    }
+    finally
+    {
+        Kill([server]);
+    }
+}
+
 // ---------------------------------------------------------------- helpers
 
 static string Machine() =>
@@ -475,15 +581,16 @@ static Process Spawn(string arguments)
     return Process.Start(start)!;
 }
 
-static async Task WaitForHealth(int port)
+static async Task WaitForHealth(int port, string scheme = "http")
 {
-    using HttpClient http = new();
+    // Any certificate is accepted: the floor's https certificate is made at start-up.
+    using HttpClient http = new(new HttpClientHandler { ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator });
     DateTime deadline = DateTime.UtcNow.AddSeconds(90);
     while (true)
     {
         try
         {
-            if ((await http.GetAsync($"http://127.0.0.1:{port}/health")).IsSuccessStatusCode)
+            if ((await http.GetAsync($"{scheme}://127.0.0.1:{port}/health")).IsSuccessStatusCode)
             {
                 return;
             }
