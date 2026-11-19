@@ -66,6 +66,7 @@ Requires .NET 10 and Orleans 10. The broker is [MQTTnet](https://github.com/dotn
 
 - [Getting started](docs/getting-started.md): a chat room in fifteen minutes
 - [Rooms](docs/rooms.md): commands, hooks, roles, private state, deadlines, saving
+- [API reference](docs/api-reference.md): every room and client API, with its purpose
 - [Guarantees](docs/guarantees.md): what is promised about ordering, delivery and commands
 - [Security](docs/security.md): authentication, limits, a checklist for going live
 - [Hosting](docs/hosting.md): one process, a cluster, or separate gateways
