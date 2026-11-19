@@ -5,7 +5,11 @@
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 
-@if (_session?.Error is { } error)
+@if (string.IsNullOrEmpty(ChatId))
+{
+    <p class="hint empty">Pick a chat, or search for a user to start one.</p>
+}
+else if (_session?.Error is { } error)
 {
     <section class="pane">
         <p class="status" id="chat-error" role="alert">@error</p>
@@ -81,8 +85,8 @@ else
     private bool _disposed;
 
     /// <summary>The id of the chat to show. When it changes, the pane moves to the other chat.</summary>
-    [Parameter, EditorRequired]
-    public string ChatId { get; set; } = "";
+    [Parameter]
+    public string? ChatId { get; set; }
 
     protected override async Task OnParametersSetAsync()
     {
@@ -101,12 +105,16 @@ else
             _scrolledTo = 0;
             _text = "";
             _adding = false;
+            if (string.IsNullOrEmpty(ChatId))
+            {
+                return;
+            }
 
             ChatSession session = ActivatorUtilities.CreateInstance<ChatSession>(Services);
             session.Changed += OnSessionChanged;
             _session = session;
             StateHasChanged();
-            await session.OpenAsync(ChatId);
+            await session.OpenAsync(ChatId!);
         }
         finally
         {
@@ -117,11 +125,24 @@ else
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         // Show the newest message, but not when older ones were loaded above.
-        long newest = _session?.Messages is { Count: > 0 } messages ? messages[^1].Id : 0;
-        if (newest != _scrolledTo && _list.Id is not null)
+        // The list exists only while a chat is shown without an error; before that the reference is stale or empty.
+        if (_session is not { Chat: not null, Error: null } shown || string.IsNullOrEmpty(ChatId))
+        {
+            return;
+        }
+
+        long newest = shown.Messages is { Count: > 0 } messages ? messages[^1].Id : 0;
+        if (newest != _scrolledTo)
         {
             _scrolledTo = newest;
-            await JS.InvokeVoidAsync("chatScroll", _list);
+            try
+            {
+                await JS.InvokeVoidAsync("chatScroll", _list);
+            }
+            catch (JSException)
+            {
+                // Scrolling is a nicety: it must never take the pane down.
+            }
         }
     }
 
@@ -142,7 +163,7 @@ else
     {
         try
         {
-            await Api.AddMemberAsync(ChatId, user);
+            await Api.AddMemberAsync(ChatId!, user);
             _adding = false;
         }
         catch (ApiException error)
@@ -155,7 +176,7 @@ else
     {
         try
         {
-            await Api.LeaveAsync(ChatId);
+            await Api.LeaveAsync(ChatId!);
             Navigation.NavigateTo("");
         }
         catch (ApiException error)

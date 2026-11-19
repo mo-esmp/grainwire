@@ -185,20 +185,25 @@ public sealed class ChatServerTests(ChatServerFixture server)
         await using GrainWireClient bobClient = await ConnectAsync(bobToken);
 
         Room<JsonElement> bobInbox = await OpenInboxAsync(bobClient, bob);
+        Room<JsonElement> aliceInbox = await OpenInboxAsync(aliceClient, alice);
         Task<InboxEvent> added = NextAsync<InboxEvent>(bobInbox, "added");
+        Task<InboxEvent> addedForAlice = NextAsync<InboxEvent>(aliceInbox, "added");
         HttpResponseMessage started = await aliceHttp.PostAsJsonAsync("/api/chats/direct", new DirectRequest(bob));
         ChatSummary chat = (await started.Content.ReadFromJsonAsync<ChatSummary>())!;
         Assert.Equal(chat.Id, (await added).ChatId);
+        Assert.Equal(chat.Id, (await addedForAlice).ChatId);
 
         Room<ChatView> room = await OpenChatAsync(aliceClient, chat.Id);
         Assert.Equal(new[] { alice, bob }.Order(StringComparer.Ordinal), room.View!.Members);
         Assert.Equal(("direct", chat.Id), (room.View.Kind, room.View.Id));
 
         Task<InboxEvent> activity = NextAsync<InboxEvent>(bobInbox, "activity");
+        Task<InboxEvent> ownActivity = NextAsync<InboxEvent>(aliceInbox, "activity");
         Task<MessageDto> broadcast = NextAsync<MessageDto>(room, "message");
         MessageDto first = await room.RequestAsync<MessageDto>("send", new { Text = " hi " });
         Assert.Equal(("hi", alice), (first.Text, first.Sender));
         Assert.Equal(first.Id, (await broadcast).Id);
+        Assert.Equal(first.Id, (await ownActivity).Message!.Id);
 
         InboxEvent notice = await activity;
         Assert.Equal(chat.Id, notice.ChatId);

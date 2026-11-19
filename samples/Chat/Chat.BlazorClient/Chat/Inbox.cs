@@ -11,6 +11,7 @@ namespace ChatSample.BlazorClient.Chat;
 public sealed class Inbox(ChatConnection connection, ChatApi api, Session session)
 {
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _lifecycle = new(1, 1); // one start or stop at a time
     private readonly List<IDisposable> _subscriptions = [];
     private readonly List<InboxEvent> _pending = [];
     private IReadOnlyList<ChatSummary> _chats = [];
@@ -34,6 +35,9 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
         }
     }
 
+    /// <summary>True while <see cref="StartAsync"/> is running.</summary>
+    public bool IsStarting { get; private set; }
+
     /// <summary>Why the list could not be loaded, or null.</summary>
     public string? Error { get; private set; }
 
@@ -48,6 +52,25 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
     /// </summary>
     public async Task StartAsync()
     {
+        // Starts and stops run one after the other. Two at once would share one join, and the older one's leave
+        // would close the room the newer one keeps.
+        await _lifecycle.WaitAsync();
+        try
+        {
+            IsStarting = true;
+            Changed?.Invoke();
+            await StartCoreAsync();
+        }
+        finally
+        {
+            IsStarting = false;
+            _lifecycle.Release();
+            Changed?.Invoke();
+        }
+    }
+
+    private async Task StartCoreAsync()
+    {
         string? me = session.Username;
         if (me is null)
         {
@@ -55,6 +78,7 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
         }
 
         int generation = await StopCoreAsync();
+        bool cleared = false;
         lock (_gate)
         {
             if (_listOwner != me)
@@ -63,7 +87,13 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
                 _chats = [];
                 _pending.Clear();
                 _listOwner = me;
+                cleared = true;
             }
+        }
+
+        if (cleared)
+        {
+            Changed?.Invoke();
         }
 
         try
@@ -102,7 +132,16 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
     /// <summary>Leaves the inbox room and forgets the list. Call it when the user signs out.</summary>
     public async Task StopAsync()
     {
-        await StopCoreAsync();
+        await _lifecycle.WaitAsync();
+        try
+        {
+            await StopCoreAsync();
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+
         lock (_gate)
         {
             _chats = [];
@@ -243,9 +282,11 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
 
     private async Task ReloadAsync()
     {
+        int generation;
         lock (_gate)
         {
             _loads++;
+            generation = _generation;
         }
 
         try
@@ -253,6 +294,12 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
             IReadOnlyList<ChatSummary> loaded = await api.ListChatsAsync();
             lock (_gate)
             {
+                if (generation != _generation)
+                {
+                    // Stopped or started again meanwhile: this list may belong to the user before.
+                    return;
+                }
+
                 // The loaded list replaces the old one. Events that came in while it loaded are applied on top;
                 // those it already includes are skipped.
                 _chats = loaded;

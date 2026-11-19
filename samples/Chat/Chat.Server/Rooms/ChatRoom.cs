@@ -41,12 +41,12 @@ public sealed record ChatView(string Id, string Kind, string? Title, IReadOnlyLi
 
 /// <summary>
 /// One per chat (the room id is the chat id), running while someone has the chat open. Messages are sent here,
-/// saved in the database and passed on to the open room and to the other members' inboxes.
+/// saved in the database and passed on to the open room and to every member's inbox.
 /// </summary>
 [RoomType("chat")]
 public sealed class ChatRoom(ChatStore store, RoomNotifier notifier) : RoomGrain<ChatRoomState>, IChatRoom
 {
-    /// <summary>Saves a message from a member, sends it to the room and tells the other members' inboxes.</summary>
+    /// <summary>Saves a message from a member, sends it to the room and tells every member's inbox.</summary>
     [OnMessage("send")]
     public async Task<MessageDto> Send(PlayerId player, SendRequest request)
     {
@@ -68,6 +68,9 @@ public sealed class ChatRoom(ChatStore store, RoomNotifier notifier) : RoomGrain
         {
             notifier.Inbox(recipient, new InboxNotice("activity", RoomId, sent.Message));
         }
+
+        // The sender's inbox hears it too, so their chat list moves the chat up, in this tab and in others.
+        notifier.Inbox(player.Value, new InboxNotice("activity", RoomId, sent.Message));
 
         return sent.Message;
     }

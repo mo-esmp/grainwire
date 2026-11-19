@@ -68,10 +68,14 @@
         {
             // A newer keystroke took over.
         }
-        catch (ApiException error) when (!typing.IsCancellationRequested)
+        catch (ApiException error)
         {
-            _results = [];
-            _error = error.Message;
+            // A search that a newer keystroke replaced has nothing to say.
+            if (!typing.IsCancellationRequested)
+            {
+                _results = [];
+                _error = error.Message;
+            }
         }
     }
 

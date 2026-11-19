@@ -38,7 +38,7 @@ public static class ChatEndpoints
             (ChatSummary chat, bool created) = await store.GetOrCreateDirectAsync(me, request.Username, time.GetUtcNow());
             if (created)
             {
-                TellAdded(notifier, chat, me);
+                TellAdded(notifier, chat);
             }
 
             return Results.Ok(chat);
@@ -48,7 +48,7 @@ public static class ChatEndpoints
         {
             string me = Caller(user);
             ChatSummary chat = await store.CreateGroupAsync(me, request.Title, request.Usernames ?? [], time.GetUtcNow());
-            TellAdded(notifier, chat, me);
+            TellAdded(notifier, chat);
             return Results.Ok(chat);
         });
 
@@ -88,10 +88,10 @@ public static class ChatEndpoints
 
     private static string Caller(ClaimsPrincipal user) => user.FindFirst("sub")!.Value;
 
-    /// <summary>Tells every member of a new chat except the one who made it.</summary>
-    private static void TellAdded(RoomNotifier notifier, ChatSummary chat, string creator)
+    /// <summary>Tells every member of a new chat, the one who made it too: their other tabs show it as well.</summary>
+    private static void TellAdded(RoomNotifier notifier, ChatSummary chat)
     {
-        foreach (string member in chat.Members.Where(m => m != creator))
+        foreach (string member in chat.Members)
         {
             notifier.Inbox(member, new InboxNotice("added", chat.Id, null));
         }

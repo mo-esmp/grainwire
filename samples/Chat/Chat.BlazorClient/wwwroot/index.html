@@ -20,7 +20,7 @@
     </div>
     <script>
       // Shows the newest message: the chat pane calls this after it draws.
-      window.chatScroll = (element) => { element.scrollTop = element.scrollHeight; };
+      window.chatScroll = (element) => { if (element) { element.scrollTop = element.scrollHeight; } };
     </script>
     <script src="_framework/blazor.webassembly#[.{fingerprint}].js"></script>
   </body>
