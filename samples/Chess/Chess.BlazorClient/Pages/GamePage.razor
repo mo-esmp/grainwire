@@ -1,0 +1,192 @@
+@page "/g/{Id}"
+@implements IAsyncDisposable
+@inject ChessConnection Connection
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>GrainWire Chess</PageTitle>
+
+@if (_session?.Error is { } error)
+{
+    <main class="game">
+        <p class="status">@error</p>
+        <p><a href="">Create a new game</a></p>
+    </main>
+}
+else if (_session?.Game is not { } game)
+{
+    <main class="game">
+        <p class="status">Connecting…</p>
+    </main>
+}
+else
+{
+    GameSession session = _session;
+    string orientation = session.Seat ?? Seats.White;
+
+    <main class="game">
+        <div class="top">
+            <header>
+                <a href="">← New game</a>
+                <span class="role" id="role">@(session.Seat is { } seat ? $"You play {seat}" : "You are watching")</span>
+                <button id="copy" type="button" @onclick="CopyLinkAsync">Copy invite link</button>
+            </header>
+            @if (ConnectionText is { Length: > 0 } offline)
+            {
+                <p class="banner" id="banner" role="status">@offline</p>
+            }
+        </div>
+        <section class="table">
+            <SeatCard Session="session" Seat="@Seats.Opponent(orientation)" />
+            <Board Pieces="session.Pieces"
+                   Orientation="@orientation"
+                   Selected="@session.Selected"
+                   LastFrom="@game.LastFrom"
+                   LastTo="@game.LastTo"
+                   Interactive="session.CanMove"
+                   Mine="@session.Seat"
+                   OnSquare="session.ClickAsync"
+                   OnMove="move => session.MoveAsync(move.From, move.To)" />
+            <SeatCard Session="session" Seat="@orientation" />
+        </section>
+        <aside>
+            <p class="status" id="status" role="status">@StatusText(game)</p>
+            @if (HowToMove(game) is { Length: > 0 } how)
+            {
+                <p class="how" id="how-to-move">@how</p>
+            }
+            @if (session.Notice.Length > 0)
+            {
+                <p class="notice" id="notice" role="alert">@session.Notice</p>
+            }
+            <ol class="moves" id="moves">
+                @for (int index = 0; index < game.Moves.Count; index += 2)
+                {
+                    <li>
+                        <span class="num">@(index / 2 + 1).</span>
+                        <span>@game.Moves[index]</span>
+                        @if (index + 1 < game.Moves.Count)
+                        {
+                            <span>@game.Moves[index + 1]</span>
+                        }
+                    </li>
+                }
+            </ol>
+            @if (session.Seat is not null && game.Status == GameStatus.Playing)
+            {
+                <button id="resign" type="button" @onclick="session.ResignAsync">Resign</button>
+            }
+        </aside>
+    </main>
+}
+
+@code {
+    private GameSession? _session;
+    private string? _openedId;
+
+    /// <summary>
+    /// The id of the game, from the address. It is also the invite.
+    /// </summary>
+    [Parameter]
+    public string Id { get; set; } = "";
+
+    /// <summary>
+    /// Present only in the address the creator starts from: create the game, with this many minutes per player.
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "new")]
+    public int? New { get; set; }
+
+    private string ConnectionText => _session?.Connection switch
+    {
+        ConnectionState.Connected => "",
+        ConnectionState.Reconnecting => "Connection lost. Reconnecting…",
+        _ => "Offline",
+    };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Id == _openedId)
+        {
+            return;
+        }
+
+        _openedId = Id;
+        await CloseAsync();
+
+        GameSession session = new(Connection);
+        session.Changed += OnChanged;
+        _session = session;
+        bool opened = await session.OpenAsync(Id, New);
+
+        // The link people share never carries the "create" part.
+        if (opened && New is not null)
+        {
+            Navigation.NavigateTo($"g/{Id}", replace: true);
+        }
+    }
+
+    public async ValueTask DisposeAsync() => await CloseAsync();
+
+    private async Task CloseAsync()
+    {
+        if (_session is { } session)
+        {
+            _session = null;
+            session.Changed -= OnChanged;
+            await session.DisposeAsync();
+        }
+    }
+
+    // The game changes from GrainWire's callbacks, which do not run as part of a Blazor event.
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private string StatusText(GameView game)
+    {
+        GameSession session = _session!;
+        if (session.ClosedMessage.Length > 0)
+        {
+            return session.ClosedMessage;
+        }
+
+        switch (game.Status)
+        {
+            case GameStatus.Waiting:
+                return "Waiting for an opponent. Send them the invite link.";
+            case GameStatus.Finished:
+                string outcome = game.Result == "draw" ? "Draw" : $"{(game.Result == Seats.White ? "White" : "Black")} wins";
+                return $"{outcome} ({game.Reason}).";
+        }
+
+        string? mover = game.Turn == Seats.White ? game.White : game.Black;
+        string turn = session.Seat == game.Turn ? "Your move" : $"{mover ?? game.Turn} to move";
+        return session.Check ? $"{turn}. Check!" : $"{turn}.";
+    }
+
+    /// <summary>
+    /// Tells a player how to enter a move. It changes once a piece is picked with a click.
+    /// </summary>
+    private string HowToMove(GameView game)
+    {
+        if (_session?.Seat is null || game.Status != GameStatus.Playing)
+        {
+            return "";
+        }
+
+        return _session.Selected is not null
+            ? "Now click the square to move it to. To cancel, click the same piece again."
+            : "To move a piece, drag it to a square, or click it and then click the square.";
+    }
+
+    private async Task CopyLinkAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", Navigation.Uri);
+            _session?.Flash("Invite link copied.");
+        }
+        catch (JSException)
+        {
+            _session?.Flash("The link could not be copied. Copy it from the address bar.");
+        }
+    }
+}

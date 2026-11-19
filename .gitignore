@@ -9,6 +9,7 @@
 *.user
 *.userosscache
 *.sln.docstates
+*.wsfiles.json
 *.env
 
 # User-specific files (MonoDevelop/Xamarin Studio)
@@ -432,6 +433,6 @@ clients/ts/dist/
 *.tgz
 
 # Chess sample: the web client is built into here
-samples/Chess/Server/wwwroot/
-samples/Chess/Web/test-results/
-samples/Chess/Web/playwright-report/
+samples/Chess/Chess.Server/wwwroot/
+samples/Chess/Chess.WebClient/test-results/
+samples/Chess/Chess.WebClient/playwright-report/

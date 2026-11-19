@@ -1,4 +1,4 @@
-﻿using ChessSample.Server;
+﻿using ChessFromScratch.Server.Game;
 
 namespace GrainWire.Tests;
 
@@ -38,6 +38,18 @@ public class ChessSampleTests
         ChessRules.MoveOutcome mate = Play(ref fen, "d8", "h4");
         Assert.Equal((Seats.Black, "checkmate"), (mate.Result, mate.Reason));
         Assert.Contains("#", mate.San);
+    }
+
+    [Fact]
+    public void A_check_that_is_not_mate_is_reported_and_the_game_goes_on()
+    {
+        string fen = ChessRules.StartFen;
+        Assert.False(Play(ref fen, "e2", "e4").Check);
+        Play(ref fen, "f7", "f5");
+        ChessRules.MoveOutcome check = Play(ref fen, "d1", "h5");
+        Assert.True(check.Check);
+        Assert.Null(check.Result);
+        Assert.False(Play(ref fen, "g7", "g6").Check);    // black blocks the check
     }
 
     [Fact]

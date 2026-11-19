@@ -4,9 +4,16 @@ using Orleans.Configuration;
 
 namespace GrainWire;
 
-/// <summary>Refuses to start a silo that contains a room grain which could run two operations at once.</summary>
+/// <summary>
+/// Refuses to start a silo that contains a room grain which could run two operations at once.
+/// </summary>
+/// <param name="grainTypes">The grain classes registered in the silo.</param>
 internal sealed class RoomGrainValidator(IOptions<GrainTypeOptions> grainTypes) : ILifecycleParticipant<ISiloLifecycle>
 {
+    /// <summary>
+    /// Subscribes the room grain check to silo startup.
+    /// </summary>
+    /// <param name="lifecycle">The silo lifecycle.</param>
     public void Participate(ISiloLifecycle lifecycle)
     {
         lifecycle.Subscribe(nameof(RoomGrainValidator), ServiceLifecycleStage.RuntimeInitialize, cancellationToken =>

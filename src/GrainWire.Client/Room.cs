@@ -22,7 +22,10 @@ public abstract class Room
     // Everything below is guarded by the client's lock. Methods named ...Locked expect the caller to hold it.
     private readonly OrderingEngine _engine;
     private readonly byte[]? _joinData;
-    private readonly Dictionary<string, ImmutableArray<Action<JsonElement, EventMeta>>> _eventHandlers = new(StringComparer.Ordinal);
+
+    private readonly Dictionary<string, ImmutableArray<Action<JsonElement, EventMeta>>> _eventHandlers =
+        new(StringComparer.Ordinal);
+
     private readonly List<ReadyWaiter> _readyWaiters = [];
     private readonly List<Action> _syncWaiters = [];
     private ImmutableArray<Action<string, JsonElement, EventMeta>> _anyHandlers = [];
@@ -115,7 +118,8 @@ public abstract class Room
         ArgumentNullException.ThrowIfNull(name);
         ArgumentNullException.ThrowIfNull(handler);
         JsonSerializerOptions json = Client.Options.SerializerOptions!;
-        Action<JsonElement, EventMeta> wrapped = (data, meta) => handler(Payloads.Deserialize<TData>(data, json)!, meta);
+        Action<JsonElement, EventMeta> wrapped = (data, meta) =>
+            handler(Payloads.Deserialize<TData>(data, json)!, meta);
         lock (Client.Gate)
         {
             _eventHandlers[name] = _eventHandlers.GetValueOrDefault(name, []).Add(wrapped);
@@ -219,14 +223,16 @@ public abstract class Room
     /// </exception>
     /// <exception cref="RoomClosedException">The room is closed for this client.</exception>
     /// <exception cref="NotConnectedException">There is no connection right now.</exception>
-    public async Task<TResult> RequestAsync<TResult>(string name, object? data = null, TimeSpan? timeout = null, CancellationToken cancellationToken = default)
+    public async Task<TResult> RequestAsync<TResult>(string name, object? data = null, TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
     {
         JsonElement result = await RequestCoreAsync(name, data, timeout, cancellationToken).ConfigureAwait(false);
         return Payloads.Deserialize<TResult>(result, Client.Options.SerializerOptions!)!;
     }
 
     /// <summary>Sends a command and waits until it has committed, ignoring any return value. See <see cref="RequestAsync{TResult}"/>.</summary>
-    public Task RequestAsync(string name, object? data = null, TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+    public Task RequestAsync(string name, object? data = null, TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
         RequestCoreAsync(name, data, timeout, cancellationToken);
 
     /// <summary>Sends a command without waiting for a reply. Nothing reports whether it was applied.</summary>
@@ -239,7 +245,8 @@ public abstract class Room
         lock (Client.Gate)
         {
             EnsureOpenLocked();
-            byte[] payload = ClientPayload.Command(GrainWireClient.NewCommandId(), _engine.Current.Incarnation, dataJson, noReply: true);
+            byte[] payload = ClientPayload.Command(GrainWireClient.NewCommandId(), _engine.Current.Incarnation,
+                dataJson, noReply: true);
             Client.PublishLocked(Wire.RoomTopic(Key, Wire.CommandPrefix + name), payload);
         }
     }
@@ -269,7 +276,8 @@ public abstract class Room
             }
 
             CloseLocked(RoomClosedReason.Left, null, notify: false);
-            PendingRequest? pending = Client.RequestLocked(RequestKind.Leave, Key, Wire.Leave, ClientPayload.Leave, s_housekeepingTimeout, (_, _) => done.TrySetResult());
+            PendingRequest? pending = Client.RequestLocked(RequestKind.Leave, Key, Wire.Leave, ClientPayload.Leave,
+                s_housekeepingTimeout, (_, _) => done.TrySetResult());
             if (pending is null)
             {
                 done.TrySetResult();
@@ -382,33 +390,34 @@ public abstract class Room
         }
 
         _rejoinWaiters = waiters;
-        PendingRequest? pending = Client.RequestLocked(RequestKind.Join, Key, Wire.Join, commandId => ClientPayload.Join(commandId, create: false, null, _joinData), null, (reply, _) =>
-        {
-            if (reply is null)
+        PendingRequest? pending = Client.RequestLocked(RequestKind.Join, Key, Wire.Join,
+            commandId => ClientPayload.Join(commandId, create: false, null, _joinData), null, (reply, _) =>
             {
-                // No reply in time. If the connection is gone, the reconnect joins again; if it is up, a later tick does.
-                RetryRejoinLaterLocked();
-            }
-            else if (reply.Status == ReplyStatus.Ok)
-            {
-                JoinedLocked(GrainWireClient.Now);
-            }
-            else if (reply.Code == Wire.RoomNotFound)
-            {
-                CloseLocked(RoomClosedReason.Lost, null, notify: true);
-            }
-            else if (reply.Status == ReplyStatus.Rejected || reply.Code == Wire.NotMember)
-            {
-                CloseLocked(RoomClosedReason.Removed, reply.Reason, notify: true);
-            }
-            else
-            {
-                // "unavailable" and the like: the room could not be reached just now (a silo is recovering, say).
-                RetryRejoinLaterLocked();
-            }
+                if (reply is null)
+                {
+                    // No reply in time. If the connection is gone, the reconnect joins again; if it is up, a later tick does.
+                    RetryRejoinLaterLocked();
+                }
+                else if (reply.Status == ReplyStatus.Ok)
+                {
+                    JoinedLocked(GrainWireClient.Now);
+                }
+                else if (reply.Code == Wire.RoomNotFound)
+                {
+                    CloseLocked(RoomClosedReason.Lost, null, notify: true);
+                }
+                else if (reply.Status == ReplyStatus.Rejected || reply.Code == Wire.NotMember)
+                {
+                    CloseLocked(RoomClosedReason.Removed, reply.Reason, notify: true);
+                }
+                else
+                {
+                    // "unavailable" and the like: the room could not be reached just now (a silo is recovering, say).
+                    RetryRejoinLaterLocked();
+                }
 
-            FinishRejoinLocked(waiters);
-        });
+                FinishRejoinLocked(waiters);
+            });
 
         if (pending is null)
         {
@@ -485,7 +494,8 @@ public abstract class Room
         }
 
         // The app has caught up with what was queued: get the state as it is now, and carry on from there.
-        if (_skipping && !_syncing && Client.Callbacks.HasCaughtUp && (_snapshotAskedAt is not { } askedAt || now - askedAt >= SnapshotRetryMs))
+        if (_skipping && !_syncing && Client.Callbacks.HasCaughtUp &&
+            (_snapshotAskedAt is not { } askedAt || now - askedAt >= SnapshotRetryMs))
         {
             _snapshotAskedAt = now;
             RunSyncLocked(null, fresh: true);
@@ -528,7 +538,8 @@ public abstract class Room
     /// <summary>Called with every snapshot the ordering engine accepts, after the member list has been replaced.</summary>
     private protected abstract void SnapshotAppliedLocked(SnapshotEnvelope snapshot, SnapshotInfo info);
 
-    private async Task<JsonElement> RequestCoreAsync(string name, object? data, TimeSpan? timeout, CancellationToken cancellationToken)
+    private async Task<JsonElement> RequestCoreAsync(string name, object? data, TimeSpan? timeout,
+        CancellationToken cancellationToken)
     {
         Wire.EnsureName(name, nameof(name));
         cancellationToken.ThrowIfCancellationRequested();
@@ -539,25 +550,28 @@ public abstract class Room
         {
             EnsureOpenLocked();
             string? incarnation = _engine.Current.Incarnation;
-            pending = Client.RequestLocked(RequestKind.Command, Key, Wire.CommandPrefix + name, commandId => ClientPayload.Command(commandId, incarnation, dataJson, noReply: false), timeout, (reply, error) =>
-            {
-                Exception? failure = reply is null ? error : InterpretLocked(reply);
-                if (failure is OperationCanceledException cancelled)
+            pending = Client.RequestLocked(RequestKind.Command, Key, Wire.CommandPrefix + name,
+                commandId => ClientPayload.Command(commandId, incarnation, dataJson, noReply: false), timeout,
+                (reply, error) =>
                 {
-                    completion.TrySetCanceled(cancelled.CancellationToken);
-                }
-                else if (failure is not null)
-                {
-                    completion.TrySetException(failure);
-                }
-                else
-                {
-                    completion.TrySetResult(reply!.Data);
-                }
-            }, this)!;
+                    Exception? failure = reply is null ? error : InterpretLocked(reply);
+                    if (failure is OperationCanceledException cancelled)
+                    {
+                        completion.TrySetCanceled(cancelled.CancellationToken);
+                    }
+                    else if (failure is not null)
+                    {
+                        completion.TrySetException(failure);
+                    }
+                    else
+                    {
+                        completion.TrySetResult(reply!.Data);
+                    }
+                }, this)!;
         }
 
-        using (cancellationToken.Register(() => Client.Abandon(pending, new OperationCanceledException(cancellationToken))))
+        using (cancellationToken.Register(() =>
+                   Client.Abandon(pending, new OperationCanceledException(cancellationToken))))
         {
             return await completion.Task.ConfigureAwait(false);
         }
@@ -610,39 +624,41 @@ public abstract class Room
         long snapshotsBefore = _engine.SnapshotsReceived;
         StreamPosition position = _engine.Current;
         long seq = _engine.Ready && !fresh ? position.Seq : -1;
-        PendingRequest? pending = Client.RequestLocked(RequestKind.Sync, Key, Wire.Sync, commandId => ClientPayload.Sync(commandId, position.Incarnation, position.Epoch, seq), s_housekeepingTimeout, (reply, _) =>
-        {
-            if (reply is not null)
+        PendingRequest? pending = Client.RequestLocked(RequestKind.Sync, Key, Wire.Sync,
+            commandId => ClientPayload.Sync(commandId, position.Incarnation, position.Epoch, seq),
+            s_housekeepingTimeout, (reply, _) =>
             {
-                if (reply.Status == ReplyStatus.Ok)
+                if (reply is not null)
                 {
-                    if (reply.Code == Wire.InSync)
+                    if (reply.Status == ReplyStatus.Ok)
                     {
-                        _engine.ConfirmInSync(GrainWireClient.Now);
+                        if (reply.Code == Wire.InSync)
+                        {
+                            _engine.ConfirmInSync(GrainWireClient.Now);
+                        }
+                        else if (reply.Code == Wire.Resynced)
+                        {
+                            ApplyLocked(_engine.ConfirmResynced(snapshotsBefore, GrainWireClient.Now));
+                        }
                     }
-                    else if (reply.Code == Wire.Resynced)
+                    else if (reply.Code == Wire.RoomNotFound)
                     {
-                        ApplyLocked(_engine.ConfirmResynced(snapshotsBefore, GrainWireClient.Now));
+                        CloseLocked(RoomClosedReason.Lost, null, notify: true);
+                    }
+                    else if (reply.Code == Wire.NotMember)
+                    {
+                        CloseLocked(RoomClosedReason.Removed, null, notify: true);
+                    }
+                    else if (reply.Code == Wire.NotJoined)
+                    {
+                        _attached = false;
+                        RejoinLocked(null);
                     }
                 }
-                else if (reply.Code == Wire.RoomNotFound)
-                {
-                    CloseLocked(RoomClosedReason.Lost, null, notify: true);
-                }
-                else if (reply.Code == Wire.NotMember)
-                {
-                    CloseLocked(RoomClosedReason.Removed, null, notify: true);
-                }
-                else if (reply.Code == Wire.NotJoined)
-                {
-                    _attached = false;
-                    RejoinLocked(null);
-                }
-            }
 
-            // No reply: the engine asks again.
-            FinishSyncLocked();
-        });
+                // No reply: the engine asks again.
+                FinishSyncLocked();
+            });
 
         if (pending is null)
         {
@@ -669,8 +685,11 @@ public abstract class Room
             return;
         }
 
-        _nextRejoinAt = GrainWireClient.Now + (long)(_rejoinDelay.TotalMilliseconds * (0.75 + (Random.Shared.NextDouble() * 0.5)));
-        _rejoinDelay = _rejoinDelay * 2 < Client.Options.MaxReconnectDelay ? _rejoinDelay * 2 : Client.Options.MaxReconnectDelay;
+        _nextRejoinAt = GrainWireClient.Now +
+                        (long)(_rejoinDelay.TotalMilliseconds * (0.75 + (Random.Shared.NextDouble() * 0.5)));
+        _rejoinDelay = _rejoinDelay * 2 < Client.Options.MaxReconnectDelay
+            ? _rejoinDelay * 2
+            : Client.Options.MaxReconnectDelay;
     }
 
     private void FinishRejoinLocked(List<Action> waiters)

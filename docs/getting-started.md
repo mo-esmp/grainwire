@@ -217,6 +217,7 @@ message, retrying a request safely, and undoing a failed command. That is what G
 ## Next
 
 - [Rooms](rooms.md): hooks, roles, private events, kicking, deadlines, saving.
+- [API reference](api-reference.md): every room and client API, with its purpose.
 - [Guarantees](guarantees.md): exactly what is promised about ordering and delivery.
 - [Security](security.md): replace the development authenticator before going live.
 - [Hosting](hosting.md): one process, a cluster, or separate gateways.

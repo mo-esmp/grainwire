@@ -36,7 +36,7 @@ The chess sample's browser test needs Playwright's Chromium once
 (`npx playwright install chromium`):
 
 ```bash
-cd samples/Chess/Web && npm ci && npm run e2e
+cd samples/Chess/Chess.WebClient && npm ci && npm run e2e
 ```
 
 ## What a change needs

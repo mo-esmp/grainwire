@@ -14,10 +14,6 @@ indent_size = 4
 [project.json]
 indent_size = 2
 
-# C# and Visual Basic files
-[*.{cs,vb}]
-charset = utf-8-bom
-
 # Code quality analyzers
 dotnet_analyzer_diagnostic.category-Security.severity = error
 dotnet_code_quality.ca1802.api_surface = private, internal
@@ -201,6 +197,14 @@ csharp_style_prefer_method_group_conversion = true:refactoring
 csharp_style_prefer_top_level_statements = true:refactoring
 csharp_style_prefer_primary_constructors = true:refactoring
 csharp_style_deconstructed_variable_declaration = true:suggestion
+
+# C# and Visual Basic files
+[*.{cs,vb}]
+charset = utf-8-bom
+resharper_xmldoc_linebreaks_inside_tags_for_elements_longer_than = 5
+resharper_csharp_blank_lines_around_single_line_property = 1
+resharper_csharp_blank_lines_around_single_line_auto_property = 1
+resharper_csharp_blank_lines_around_single_line_invocable = 1
 
 # C++ Files
 [*.{cpp,h,in}]

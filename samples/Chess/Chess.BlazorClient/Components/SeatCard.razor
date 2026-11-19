@@ -1,0 +1,48 @@
+@{
+    GameView game = Session.Game!;
+    string? player = Seat == Seats.White ? game.White : game.Black;
+    MemberStatus? presence = Session.PresenceOf(player);
+    bool active = game.Status == GameStatus.Playing && game.Turn == Seat;
+}
+
+<div class="seat @Seat @(active ? "active" : "")" data-seat="@Seat">
+    <span class="chip @Seat" aria-hidden="true"></span>
+    <span class="who">
+        @if (player is null)
+        {
+            <text>Waiting for an opponent…</text>
+        }
+        else
+        {
+            @player
+            @if (player == Session.Me)
+            {
+                <text> (you)</text>
+            }
+        }
+    </span>
+    @switch (presence)
+    {
+        case MemberStatus.Online:
+            <span class="presence online">online</span>
+            break;
+        case MemberStatus.Reconnecting:
+            <span class="presence reconnecting">reconnecting…</span>
+            break;
+        case MemberStatus.Left:
+            <span class="presence left">left</span>
+            break;
+    }
+    <Clock Session="Session" Seat="@Seat" />
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public GameSession Session { get; set; } = null!;
+
+    /// <summary>
+    /// Which side this card is for: "white" or "black".
+    /// </summary>
+    [Parameter, EditorRequired]
+    public string Seat { get; set; } = "";
+}

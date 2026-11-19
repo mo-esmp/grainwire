@@ -1,11 +1,14 @@
 # GrainWire chess sample
 
-An online chess game in two small parts:
+An online chess game: one server and two clients that can play each other.
 
-- [`Server/ChessGameGrain.cs`](Server/ChessGameGrain.cs): the game. Seats, turns, clocks, resigning and
+- [`Chess.Server/Game/ChessGameGrain.cs`](Chess.Server/Game/ChessGameGrain.cs): the game. Seats, turns, clocks, resigning and
   forfeits, in about 100 lines. The rules of chess come from the MIT-licensed
   [Gera.Chess](https://www.nuget.org/packages/Gera.Chess) library.
-- [`Web/src/main.ts`](Web/src/main.ts): the browser. It draws what the server sends and sends moves.
+- [`Chess.WebClient/src/main.ts`](Chess.WebClient/src/main.ts): the browser client in TypeScript. It draws what the
+  server sends and sends moves.
+- [`Chess.BlazorClient/Game/GameSession.cs`](Chess.BlazorClient/Game/GameSession.cs): the same client in Blazor
+  WebAssembly, written against `GrainWire.Client`. See [The Blazor client](#the-blazor-client).
 
 Everything else (connections, ordering, presence, reconnecting, saving) is GrainWire.
 
@@ -13,24 +16,40 @@ Everything else (connections, ordering, presence, reconnecting, saving) is Grain
 
 You need the .NET 10 SDK and Node.js 20 or later.
 
-Build the browser client once (it is written into `Server/wwwroot`):
+Build the browser client once (it is written into `Chess.Server/wwwroot`):
 
 ```bash
 cd clients/ts && npm ci && npm run build
 ```
 
 ```bash
-cd samples/Chess/Web && npm ci && npm run build
+cd samples/Chess/Chess.WebClient && npm ci && npm run build
 ```
 
 Start the server:
 
 ```bash
-dotnet run --project samples/Chess/Server
+dotnet run --project samples/Chess/Chess.Server
 ```
 
 Open <http://localhost:5200>, create a game, and open the invite link in a second browser (or a
 private window) under a different name. A third visitor watches.
+
+## The Blazor client
+
+`Chess.BlazorClient` is a second client for the same server. It runs in the browser as WebAssembly and uses
+`GrainWire.Client`, the .NET client library, over the same WebSocket endpoint as the TypeScript client.
+
+With the server running, start it in a second terminal:
+
+```bash
+dotnet run --project samples/Chess/Chess.BlazorClient
+```
+
+Open <http://localhost:5202>. A game created in one client can be joined from the other: the invite id is
+the last part of the address in both (`/g/<id>` here, `#/g/<id>` in the TypeScript client).
+
+The server address is set in [`Chess.BlazorClient/wwwroot/appsettings.json`](Chess.BlazorClient/wwwroot/appsettings.json).
 
 ## Things to try
 
@@ -51,6 +70,6 @@ private window) under a different name. A third visitor watches.
 
 ## Develop
 
-`npm run dev` in `Web/` serves the site with hot reload and forwards `/mqtt` to the server on
+`npm run dev` in `Chess.WebClient/` serves the site with hot reload and forwards `/mqtt` to the server on
 port 5200. `npm run e2e` builds the site and plays a game in two real browsers with Playwright
 (run `npx playwright install chromium` once first).

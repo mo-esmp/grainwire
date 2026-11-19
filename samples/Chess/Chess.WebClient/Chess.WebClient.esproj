@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.VisualStudio.JavaScript.Sdk/1.0.6887863">
+  <PropertyGroup>
+    <BuildCommand>npm run build</BuildCommand>
+    <StartupCommand>npm run dev</StartupCommand>
+  </PropertyGroup>
+  <!-- On CI the solution build must not run npm: the page needs clients/ts built first,
+       and only the chess-sample job does that. That job builds the page with npm directly. -->
+  <PropertyGroup Condition="'$(CI)' == 'true'">
+    <ShouldRunNpmInstall>false</ShouldRunNpmInstall>
+    <ShouldRunBuildScript>false</ShouldRunBuildScript>
+  </PropertyGroup>
+  <!-- dotnet pack runs over the whole solution, and this project type has no Pack target of its own.
+       The page is not a NuGet package, so packing it does nothing. -->
+  <Target Name="Pack" />
+</Project>
