@@ -51,6 +51,36 @@ the last part of the address in both (`/g/<id>` here, `#/g/<id>` in the TypeScri
 
 The server address is set in [`Chess.BlazorClient/wwwroot/appsettings.json`](Chess.BlazorClient/wwwroot/appsettings.json).
 
+## Rules in Python
+
+`Chess.BridgeServer` is a second server for the same clients, with the rules of the game written in Python.
+Its room grain, [`ChessRoom`](Chess.BridgeServer/ChessRoom.cs), only lists the commands and who may send them.
+For everything else it calls a rules service and applies the answer:
+
+- [`Chess.BridgeServer/Bridge/ExternalRoomGrain.cs`](Chess.BridgeServer/Bridge/ExternalRoomGrain.cs): the bridge.
+  It turns every hook and command into one `POST /decide` with the room's state, and applies the decision with
+  the ordinary `RoomGrain` methods. It is not specific to chess.
+- [`rules-python/chess_rules.py`](rules-python/chess_rules.py): the game, as one function that takes the state
+  and what happened and returns the new state and what to send. The contract is described in
+  [`rules-python/README.md`](rules-python/README.md).
+
+The grain still does everything GrainWire promises: one command at a time, nothing sent before the commit,
+retries that never run twice, saving, and recovery. The Python service keeps no state, so it can be restarted
+or run as several copies. If it fails or is too slow, the command is undone and the player gets an error.
+
+Run it (after building the browser client as above). Start the rules service as described in
+[`rules-python/README.md`](rules-python/README.md#run-it), then:
+
+```bash
+dotnet run --project samples/Chess/Chess.BridgeServer
+```
+
+Open <http://localhost:5300>. It serves the same browser client. The Blazor client can use it too: set `Chess:ServerUrl`
+in its [`appsettings.json`](Chess.BlazorClient/wwwroot/appsettings.json) to `ws://localhost:5300/mqtt`.
+
+`npm run e2e:bridge` in `Chess.WebClient/` plays the same browser games as `npm run e2e`, against this server.
+It starts the rules service with `python` (set `PYTHON` to use another one, such as a virtual environment's).
+
 ## Things to try
 
 - **Drop a player.** Turn off one browser's network (DevTools → Network → Offline). The opponent

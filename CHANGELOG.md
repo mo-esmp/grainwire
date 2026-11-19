@@ -16,3 +16,5 @@ First preview.
 - `GrainWire.Client`: the .NET client, with the same behaviour as the browser client. Built on
   MQTTnet's client, with no Orleans dependency.
 - The chess sample, the wire protocol, benchmarks and documentation.
+- A second chess server whose rules are written in Python: a bridge grain hands every room operation to an
+  external rules service over HTTP and applies its decision.

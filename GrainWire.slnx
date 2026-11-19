@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/samples/Chess/">
     <Project Path="samples/Chess/Chess.BlazorClient/Chess.BlazorClient.csproj" />
+    <Project Path="samples/Chess/Chess.BridgeServer/Chess.BridgeServer.csproj" />
     <Project Path="samples/Chess/Chess.Server/Chess.Server.csproj" Id="36a8abe2-4d20-4432-8510-f81ae3e5ed59" />
     <Project Path="samples/Chess/Chess.WebClient/Chess.WebClient.esproj">
       <Build />
