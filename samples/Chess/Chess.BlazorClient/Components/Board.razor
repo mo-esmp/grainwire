@@ -1,0 +1,158 @@
+@* The 64 squares. The board only draws and reports what the player did: a click on a square, or a piece dragged
+   from one square to another. Whether that is a legal move is for the server to say. *@
+
+<div id="board" class="board @(Interactive ? "interactive" : "")" role="group" aria-label="Chess board">
+    @{
+        int[] ranks = Orientation == Seats.White ? s_ranksForWhite : s_ranksForBlack;
+        char[] columns = Orientation == Seats.White ? s_filesForWhite : s_filesForBlack;
+    }
+    @foreach (int rank in ranks)
+    {
+        foreach (char file in columns)
+        {
+            string square = $"{file}{rank}";
+            bool occupied = Pieces.TryGetValue(square, out Piece piece);
+            bool draggable = occupied && Interactive && piece.Color == Mine;
+
+            <div @key="square"
+                 class="@SquareClass(square, file, rank)"
+                 data-square="@square"
+                 role="button"
+                 tabindex="@(Interactive ? 0 : -1)"
+                 aria-label="@(occupied ? $"{square}, {piece.Color} {piece.Name}" : $"{square}, empty")"
+                 @onclick="() => OnSquare.InvokeAsync(square)"
+                 @onkeydown="args => OnKeyAsync(args, square)"
+                 @ondragstart="() => StartDrag(square)"
+                 @ondragenter="() => _over = square"
+                 @ondragover:preventDefault="true"
+                 @ondrop="() => DropAsync(square)"
+                 @ondrop:preventDefault="true"
+                 @ondragend="EndDrag">
+                @if (occupied)
+                {
+                    @* Firefox only starts a drag when some data was set, which Blazor cannot do from C#. *@
+                    <span class="piece @piece.Color" aria-hidden="true" draggable="@(draggable ? "true" : "false")"
+                          ondragstart="event.dataTransfer.setData('text/plain', '')">@piece.Glyph</span>
+                }
+                @if (file == columns[0])
+                {
+                    <span class="coord rank">@rank</span>
+                }
+                @if (rank == ranks[^1])
+                {
+                    <span class="coord file">@file</span>
+                }
+            </div>
+        }
+    }
+</div>
+
+@code {
+    private static readonly int[] s_ranksForWhite = [8, 7, 6, 5, 4, 3, 2, 1];
+    private static readonly int[] s_ranksForBlack = [1, 2, 3, 4, 5, 6, 7, 8];
+    private static readonly char[] s_filesForWhite = [.. Position.Files];
+    private static readonly char[] s_filesForBlack = ['h', 'g', 'f', 'e', 'd', 'c', 'b', 'a'];
+
+    private string? _dragFrom;
+    private string? _over;
+
+    [Parameter, EditorRequired]
+    public IReadOnlyDictionary<string, Piece> Pieces { get; set; } = null!;
+
+    /// <summary>
+    /// Which side sits at the bottom: "white" or "black".
+    /// </summary>
+    [Parameter]
+    public string Orientation { get; set; } = Seats.White;
+
+    /// <summary>
+    /// The square picked with a click, if any.
+    /// </summary>
+    [Parameter]
+    public string? Selected { get; set; }
+
+    [Parameter]
+    public string? LastFrom { get; set; }
+
+    [Parameter]
+    public string? LastTo { get; set; }
+
+    /// <summary>
+    /// True when the viewer may move a piece right now.
+    /// </summary>
+    [Parameter]
+    public bool Interactive { get; set; }
+
+    /// <summary>
+    /// The side whose pieces the viewer may drag, or null for someone who watches.
+    /// </summary>
+    [Parameter]
+    public string? Mine { get; set; }
+
+    /// <summary>
+    /// A square was clicked, or chosen with Enter or Space.
+    /// </summary>
+    [Parameter]
+    public EventCallback<string> OnSquare { get; set; }
+
+    /// <summary>
+    /// A piece was dragged from one square and dropped on another.
+    /// </summary>
+    [Parameter]
+    public EventCallback<(string From, string To)> OnMove { get; set; }
+
+
+    private string SquareClass(string square, char file, int rank)
+    {
+        bool dark = (Position.Files.IndexOf(file) + rank) % 2 == 1;
+        string classes = dark ? "square dark" : "square light";
+        if (square == Selected)
+        {
+            classes += " selected";
+        }
+
+        if (square == LastFrom || square == LastTo)
+        {
+            classes += " last";
+        }
+
+        if (_dragFrom is not null)
+        {
+            if (square == _dragFrom)
+            {
+                classes += " lifted";
+            }
+            else if (square == _over)
+            {
+                classes += " drop";
+            }
+        }
+
+        return classes;
+    }
+
+    private Task OnKeyAsync(KeyboardEventArgs args, string square) =>
+        args.Key is "Enter" or " " ? OnSquare.InvokeAsync(square) : Task.CompletedTask;
+
+    private void StartDrag(string square)
+    {
+        _dragFrom = square;
+        _over = null;
+    }
+
+    private async Task DropAsync(string square)
+    {
+        string? from = _dragFrom;
+        EndDrag();
+        if (from is not null && from != square)
+        {
+            await OnMove.InvokeAsync((from, square));
+        }
+    }
+
+    private void EndDrag()
+    {
+        _dragFrom = null;
+        _over = null;
+    }
+}

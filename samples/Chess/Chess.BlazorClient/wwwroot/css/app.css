@@ -1,0 +1,414 @@
+:root {
+    color-scheme: light dark;
+    --bg: #f6f5f2;
+    --panel: #ffffff;
+    --text: #1f2328;
+    --muted: #5d6570;
+    --line: #d9d6cf;
+    --accent: #2f6f4f;
+    --accent-text: #ffffff;
+    --light-square: #eeeed2;
+    --dark-square: #769656;
+    --warn: #9a5b00;
+    --danger: #a12622;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #17191c;
+        --panel: #22252a;
+        --text: #e8e6e3;
+        --muted: #a3a9b2;
+        --line: #363a41;
+        --accent: #5fae86;
+        --accent-text: #10130f;
+        --warn: #e0a54a;
+        --danger: #f08a85;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.45;
+}
+
+a {
+    color: var(--accent);
+}
+
+button,
+input,
+select {
+    font: inherit;
+    color: inherit;
+}
+
+button {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+}
+
+    button:hover {
+        border-color: var(--accent);
+    }
+
+    button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-text);
+        font-weight: 600;
+    }
+
+:focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* ---------- home ---------- */
+
+.home {
+    max-width: 26rem;
+    margin: 12vh auto 0;
+    padding: 0 1.25rem;
+    display: grid;
+    gap: 1rem;
+}
+
+    .home h1 {
+        margin: 0;
+        font-size: 1.9rem;
+    }
+
+    .home .lead,
+    .home .hint {
+        margin: 0;
+        color: var(--muted);
+    }
+
+    .home label {
+        display: grid;
+        gap: 0.3rem;
+        font-weight: 600;
+    }
+
+    .home input,
+    .home select {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 8px;
+        padding: 0.55rem 0.7rem;
+        font-weight: 400;
+    }
+
+/* ---------- game ---------- */
+
+.game {
+    max-width: 62rem;
+    margin: 0 auto;
+    padding: 1rem 1.25rem 2rem;
+    display: grid;
+    grid-template-columns: minmax(0, 36rem) minmax(14rem, 1fr);
+    grid-template-areas: "top top" "table aside";
+    gap: 1rem 1.5rem;
+    align-items: start;
+}
+
+    .game .top {
+        grid-area: top;
+        display: grid;
+        gap: 0.75rem;
+    }
+
+    .game header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+
+        .game header .role {
+            margin-left: auto;
+            color: var(--muted);
+        }
+
+.banner {
+    margin: 0;
+    padding: 0.6rem 0.9rem;
+    border-radius: 8px;
+    border: 1px solid var(--warn);
+    color: var(--warn);
+    font-weight: 600;
+}
+
+.table {
+    grid-area: table;
+    display: grid;
+    gap: 0.6rem;
+}
+
+.seat {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+}
+
+    .seat.active {
+        border-color: var(--accent);
+        box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+    .seat .who {
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .seat .clock {
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+        font-size: 1.25rem;
+        font-weight: 700;
+    }
+
+.chip {
+    width: 0.9rem;
+    height: 0.9rem;
+    border-radius: 50%;
+    border: 1px solid var(--muted);
+    flex: none;
+}
+
+    .chip.white {
+        background: #fff;
+    }
+
+    .chip.black {
+        background: #111;
+    }
+
+.presence {
+    font-size: 0.8rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+}
+
+    .presence.online {
+        color: var(--accent);
+    }
+
+    .presence.reconnecting {
+        color: var(--warn);
+    }
+
+    .presence.left {
+        color: var(--danger);
+    }
+
+.board {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    aspect-ratio: 1;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    container-type: inline-size;
+}
+
+.square {
+    position: relative;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    aspect-ratio: 1;
+    display: grid;
+    place-items: center;
+    cursor: default;
+}
+
+.board.interactive .square {
+    cursor: pointer;
+}
+
+
+.square.light {
+    background: var(--light-square);
+}
+
+.square.dark {
+    background: var(--dark-square);
+}
+
+.square.last::after,
+.square.selected::after,
+.square.drop::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 221, 51, 0.45);
+    pointer-events: none;
+}
+
+.square.selected::after,
+.square.drop::after {
+    background: rgba(20, 110, 190, 0.5);
+}
+
+/* While a piece is dragged, a faint copy stays on its square and the real one follows the pointer. */
+.square.lifted .piece {
+    opacity: 0.3;
+}
+
+.square:focus-visible {
+    outline-offset: -3px;
+    z-index: 1;
+}
+
+.piece {
+    position: relative;
+    z-index: 1;
+    font-size: 9cqw;
+    line-height: 1;
+    user-select: none;
+}
+
+    .piece.white {
+        color: #fff;
+        text-shadow: 0 0 2px #000, 0 0 2px #000, 0 1px 2px #000;
+    }
+
+    .piece.black {
+        color: #151515;
+        text-shadow: 0 0 1px rgba(255, 255, 255, 0.5);
+    }
+
+
+.coord {
+    position: absolute;
+    font-size: 2.1cqw;
+    font-weight: 700;
+    opacity: 0.7;
+    color: #1f2328;
+}
+
+    .coord.rank {
+        top: 2px;
+        left: 3px;
+    }
+
+    .coord.file {
+        bottom: 1px;
+        right: 3px;
+    }
+
+aside {
+    grid-area: aside;
+    display: grid;
+    gap: 0.75rem;
+    align-content: start;
+}
+
+.status {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 700;
+}
+
+.how {
+    margin: 0;
+    color: var(--muted);
+}
+
+.notice {
+    margin: 0;
+    padding: 0.5rem 0.75rem;
+    border-radius: 8px;
+    border: 1px solid var(--danger);
+    color: var(--danger);
+}
+
+.moves {
+    list-style: none;
+    margin: 0;
+    padding: 0.5rem 0.75rem;
+    max-height: 18rem;
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-variant-numeric: tabular-nums;
+    min-height: 3rem;
+}
+
+    .moves li {
+        display: grid;
+        grid-template-columns: 2.2rem 1fr 1fr;
+        gap: 0.25rem;
+        padding: 0.1rem 0;
+    }
+
+    .moves .num {
+        color: var(--muted);
+    }
+
+@media (max-width: 48rem) {
+    .game {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas: "top" "table" "aside";
+    }
+
+        .game header {
+            flex-wrap: wrap;
+        }
+}
+
+/* ---------- Blazor ---------- */
+
+/* The squares are not buttons here, so they need what a button has by default. */
+.square {
+    user-select: none;
+}
+
+.piece[draggable="true"] {
+    cursor: grab;
+}
+
+.loading {
+    max-width: 26rem;
+    margin: 12vh auto 0;
+    padding: 0 1.25rem;
+    color: var(--muted);
+}
+
+#blazor-error-ui {
+    display: none;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 100;
+    padding: 0.6rem 1.25rem;
+    background: var(--panel);
+    border-top: 1px solid var(--danger);
+    color: var(--danger);
+}
+
+    #blazor-error-ui .dismiss {
+        float: right;
+        cursor: pointer;
+    }

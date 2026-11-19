@@ -1,0 +1,46 @@
+@page "/"
+@using System.Security.Cryptography
+@inject PlayerName PlayerName
+@inject NavigationManager Navigation
+
+<PageTitle>GrainWire Chess</PageTitle>
+
+<main class="home">
+    <h1>GrainWire Chess</h1>
+    <p class="lead">
+        The Blazor client of the GrainWire chess sample. It runs in your browser as WebAssembly and plays through
+        GrainWire.Client. Each game lives in one Orleans grain on the server; moves travel over MQTT.
+    </p>
+    <label>
+        Your name
+        <input id="name" maxlength="24" autocomplete="nickname" @bind="_name" />
+    </label>
+    <label>
+        Minutes per player
+        <select id="minutes" @bind="_minutes">
+            <option value="1">1</option>
+            <option value="3">3</option>
+            <option value="5">5</option>
+            <option value="10">10</option>
+            <option value="30">30</option>
+        </select>
+    </label>
+    <button id="create" class="primary" type="button" @onclick="CreateAsync">Create a game</button>
+    <p class="hint">You get a link to send to your opponent. Anyone else who opens it watches the game.</p>
+</main>
+
+@code {
+    private string _name = "";
+    private int _minutes = 10;
+
+    protected override async Task OnInitializedAsync() => _name = await PlayerName.GetAsync();
+
+    private async Task CreateAsync()
+    {
+        await PlayerName.SetAsync(_name);
+
+        // The id is the invite: anyone who has it can join, so it is long and random.
+        string id = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        Navigation.NavigateTo($"g/{id}?new={_minutes}");
+    }
+}

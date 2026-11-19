@@ -1,0 +1,47 @@
+@implements IDisposable
+
+<span class="clock" data-clock="@Seat">@Text</span>
+
+@code {
+    private readonly CancellationTokenSource _stop = new();
+
+    [Parameter, EditorRequired]
+    public GameSession Session { get; set; } = null!;
+
+    [Parameter, EditorRequired]
+    public string Seat { get; set; } = "";
+
+    private string Text
+    {
+        get
+        {
+            long seconds = (long)Math.Ceiling(Session.Remaining(Seat) / 1000.0);
+            return $"{seconds / 60}:{seconds % 60:00}";
+        }
+    }
+
+    // The clock redraws itself a few times a second, so the rest of the page only redraws when the game changes.
+    protected override void OnInitialized() => _ = TickAsync();
+
+    public void Dispose()
+    {
+        _stop.Cancel();
+        _stop.Dispose();
+    }
+
+    private async Task TickAsync()
+    {
+        using PeriodicTimer timer = new(TimeSpan.FromMilliseconds(250));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(_stop.Token))
+            {
+                StateHasChanged();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The page was left.
+        }
+    }
+}
