@@ -435,6 +435,7 @@ static async Task<int> RunIdle(int connections, int factor, int roomsPerConnecti
 static async Task<IdleStates> IdleRun(int connections, int roomsPerConnection, string? gcdump, List<string> dumpFailures, Action<string> log)
 {
     log($"Run with {connections:N0} connections:");
+    await PortBudget.WaitForAsync(connections, log);   // before the servers take their ports
     int siloHttp = FreePort();
     int orleansGateway = FreePort();
     int[] gatewayHttp = [FreePort(), FreePort()];
@@ -622,6 +623,7 @@ static async Task<int> RunFloorBenchmark(int connections, int factor, bool tls, 
 static async Task<FloorStates> FloorRun(int connections, bool tls, Action<string> log)
 {
     log($"Run with {connections:N0} connections:");
+    await PortBudget.WaitForAsync(connections, log);   // before the servers take their ports
     int port = FreePort();
     Process server = Spawn($"floor --http {port}{(tls ? " --tls" : "")}");
     try

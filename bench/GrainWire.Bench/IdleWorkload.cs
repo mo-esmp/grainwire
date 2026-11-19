@@ -129,6 +129,7 @@ public static class IdleWorkload
         // Even indexes connect to the first gateway and odd to the second, so the two players of a room sit on different gateways.
         async Task<int> ConnectAllAsync(BenchClient?[] into)
         {
+            await PortBudget.WaitForAsync(into.Length, log);
             int count = 0;
             await Parallel.ForAsync(0, into.Length, new ParallelOptions { MaxDegreeOfParallelism = Parallelism }, async (i, _) =>
             {

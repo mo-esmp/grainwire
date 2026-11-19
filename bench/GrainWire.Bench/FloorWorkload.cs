@@ -49,6 +49,7 @@ public static class FloorWorkload
 
         async Task<int> ConnectAllAsync()
         {
+            await PortBudget.WaitForAsync(connections, log);
             int count = 0;
             await Parallel.ForAsync(0, connections, new ParallelOptions { MaxDegreeOfParallelism = Parallelism }, async (i, cancellationToken) =>
             {
