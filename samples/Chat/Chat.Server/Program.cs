@@ -1,1 +1,3 @@
-WebApplication.CreateBuilder(args).Build().Run();
+using ChatSample.Server;
+
+ChatServerHost.Build(args).Run();
