@@ -229,6 +229,18 @@ public sealed class ChatStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task A_group_you_were_just_added_to_is_listed_by_when_you_joined()
+    {
+        ChatStore store = NewStore();
+        string old = (await store.CreateGroupAsync("alice", "old", ["bob"], T0)).Id;
+        string newer = (await store.CreateGroupAsync("carol", "newer", ["dave"], T0.AddMinutes(10))).Id;
+
+        await store.AddMemberAsync("alice", old, "carol", T0.AddMinutes(20));
+
+        Assert.Equal([old, newer], (await store.ListChatsAsync("carol")).Select(c => c.Id));
+    }
+
+    [Fact]
     public async Task Chats_are_listed_newest_activity_first()
     {
         ChatStore store = NewStore();

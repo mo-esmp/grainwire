@@ -32,7 +32,8 @@ public static class ChatServerHost
             silo.AddGrainWire();
         });
 
-        // A chat client opens a room for each chat in the user's list, so it needs more than the default 10 a minute.
+        // Opening a chat that nobody else has open creates its room, and so do the inbox join at sign-in and every
+        // rejoin after a room is lost, so a busy client needs more than the default 10 a minute.
         builder.Services.AddGrainWireGateway(o => o.RoomCreationsPerMinute = 60);
 
         string database = config["Chat:Database"] ?? "Data Source=chat.db";

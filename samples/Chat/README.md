@@ -34,7 +34,7 @@ both the API and the GrainWire connection accept.
 
 You need the .NET 10 SDK. There is nothing else to set up: the database is SQLite, created on first start.
 
-Start the server:
+Run the commands from the repository root. Start the server:
 
 ```bash
 dotnet run --project samples/Chat/Chat.Server
@@ -67,12 +67,20 @@ The server address is set in [`Chat.BlazorClient/wwwroot/appsettings.json`](Chat
 - **Leave a group.** The group disappears from your list, and the others' member list updates.
 - **Restart the server.** Stop it and start it again. Both clients show "Connection lost. Reconnecting…", come
   back by themselves, the history is still there, and sending works.
+- **Go offline.** Turn off one browser's network (DevTools → Network → Offline). The others keep working. Turn
+  it back on: the chat catches up by itself, with no reload.
 
 ## What the sample leaves out
 
 - **Migrations.** The schema is created at startup with `EnsureCreated`. A real app uses EF Core migrations.
 - **A real key store.** The JWT signing key sits in `appsettings.Development.json`. A real app keeps it in a
   secret store, and the server refuses to start without a key outside development.
+- **Token expiry and refresh.** The sign-in token lasts 7 days and is not renewed. When the server refuses it at
+  connect time the client signs the user out. A connection that is already open and later loses the token keeps
+  trying to reconnect with it, and nothing signs the user out until the next call to the API.
+- **Private inboxes.** Whether a room exists, such as whether a user's inbox room is running (so whether they
+  were online recently), can be seen by anyone who can name the room, and inbox ids are usernames. A real app
+  would use unguessable inbox ids.
 - **Sign-up limits and password reset.** Anyone can sign up as often as they like, and a forgotten password
   cannot be recovered.
 - **Message history for people who were out.** The server has no per-user copy. Someone who leaves a group and

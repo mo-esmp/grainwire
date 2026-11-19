@@ -21,7 +21,4 @@ builder.Services.AddSingleton<ChatApi>();
 builder.Services.AddSingleton<ChatConnection>();
 builder.Services.AddSingleton<Inbox>();
 
-// A chat session belongs to the page that shows the chat, so every page gets its own.
-builder.Services.AddTransient<ChatSession>();
-
 await builder.Build().RunAsync();

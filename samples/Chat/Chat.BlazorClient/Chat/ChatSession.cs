@@ -22,6 +22,7 @@ public sealed class ChatSession(ChatConnection connection, ChatApi api, Inbox in
     private long _markedRead;
     private bool _hasOlder;
     private bool _disposed;
+    private bool _retryWhenConnected;
 
     /// <summary>Called whenever something the page shows has changed. It can be called on any thread.</summary>
     public event Action? Changed;
@@ -152,6 +153,8 @@ public sealed class ChatSession(ChatConnection connection, ChatApi api, Inbox in
             room = DetachLocked();
         }
 
+        connection.StateChanged -= RetryWhenConnected;
+
         if (inbox.OpenChatId == _chatId)
         {
             inbox.OpenChatId = null;
@@ -174,6 +177,13 @@ public sealed class ChatSession(ChatConnection connection, ChatApi api, Inbox in
         catch (Exception error) when (error is GrainWireClientException or ArgumentException or InvalidOperationException)
         {
             Fail(error is RejectedException or RoomException ? NoLongerMember : Describe(error, "This chat could not be opened."));
+            if (error is NotConnectedException && !_retryWhenConnected)
+            {
+                // Offline: open the chat again when the connection is back.
+                _retryWhenConnected = true;
+                connection.StateChanged += RetryWhenConnected;
+            }
+
             return false;
         }
 
@@ -231,7 +241,21 @@ public sealed class ChatSession(ChatConnection connection, ChatApi api, Inbox in
         }
 
         connection.StateChanged += Notify;
+        Error = null;
+        Notify();
         return true;
+    }
+
+    private void RetryWhenConnected()
+    {
+        if (connection.State != ConnectionState.Connected || _disposed)
+        {
+            return;
+        }
+
+        connection.StateChanged -= RetryWhenConnected;
+        _retryWhenConnected = false;
+        _ = JoinAsync();
     }
 
     private void OnClosed(ClosedInfo closed)

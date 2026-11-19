@@ -290,8 +290,12 @@ public sealed class ChatStore(IDbContextFactory<ChatDb> dbs)
         var items = new List<(DateTimeOffset At, ChatSummary Summary)>();
         foreach (Chat chat in chats)
         {
-            ChatSummary summary = await SummarizeAsync(db, chat, mine.First(m => m.ChatId == chat.Id));
-            items.Add((summary.LastMessage?.SentAt ?? chat.CreatedAt, summary));
+            Member member = mine.First(m => m.ChatId == chat.Id);
+            ChatSummary summary = await SummarizeAsync(db, chat, member);
+
+            // A chat with no messages counts from when the caller joined it, so a group they were just added to is
+            // near the top (for the creator and in a direct chat that is the same moment as the chat's creation).
+            items.Add((summary.LastMessage?.SentAt ?? member.JoinedAt, summary));
         }
 
         return items.OrderByDescending(i => i.At).Select(i => i.Summary).ToList();

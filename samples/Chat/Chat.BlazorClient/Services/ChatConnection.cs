@@ -9,6 +9,10 @@ namespace ChatSample.BlazorClient.Services;
 /// </summary>
 public sealed class ChatConnection : IAsyncDisposable
 {
+    // MQTT 5 CONNACK reason codes with which the gateway refuses a token.
+    private const int BadUserNameOrPassword = 134;
+    private const int NotAuthorized = 135;
+
     private readonly IConfiguration _configuration;
     private readonly Session _session;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -33,7 +37,9 @@ public sealed class ChatConnection : IAsyncDisposable
     /// Returns the connection, opening it first if needed. A different user gets a new connection, because the
     /// token is who they are to the server.
     /// </summary>
-    /// <exception cref="ConnectException">The server could not be reached or refused the connection.</exception>
+    /// <exception cref="ConnectException">
+    /// The server could not be reached or refused the connection. When it refused the token, the user is signed out.
+    /// </exception>
     /// <exception cref="InvalidOperationException">Nobody is signed in.</exception>
     public async Task<GrainWireClient> GetAsync()
     {
@@ -48,13 +54,26 @@ public sealed class ChatConnection : IAsyncDisposable
 
             await CloseAsync();
 
-            GrainWireClient client = await GrainWireClient.ConnectAsync(new GrainWireClientOptions
+            GrainWireClient client;
+            try
             {
-                Url = new Uri(_configuration["Chat:MqttUrl"] ?? "ws://localhost:5300/mqtt"),
+                client = await GrainWireClient.ConnectAsync(new GrainWireClientOptions
+                {
+                    Url = new Uri(_configuration["Chat:MqttUrl"] ?? "ws://localhost:5300/mqtt"),
 
-                // Asked again before every reconnect, so the connection always uses the token the user has now.
-                AccessTokenProvider = _ => ValueTask.FromResult(_session.Token),
-            });
+                    // Asked again before every reconnect, so the connection always uses the token the user has now.
+                    AccessTokenProvider = _ => ValueTask.FromResult(_session.Token),
+                });
+            }
+            catch (ConnectException error) when (error.ReasonCode is BadUserNameOrPassword or NotAuthorized)
+            {
+                // The token is expired or not accepted: retrying cannot help, so the user signs in again. A server that
+                // is simply down has no reason code and does not end up here. The gate is held, and signing out wants
+                // it to close the connection, so the sign-out is not awaited.
+                _ = _session.SignOutAsync().AsTask();
+                throw;
+            }
+
             client.StateChanged += _ => StateChanged?.Invoke();
             _client = client;
             _connectedAs = name;
