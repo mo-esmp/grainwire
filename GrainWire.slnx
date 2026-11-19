@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/samples/Chat/">
+    <Project Path="samples/Chat/Chat.BlazorClient/Chat.BlazorClient.csproj" />
     <Project Path="samples/Chat/Chat.Server/Chat.Server.csproj" />
   </Folder>
   <Folder Name="/samples/Chess/">
