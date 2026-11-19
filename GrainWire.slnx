@@ -26,6 +26,7 @@
   </Folder>
   <Folder Name="/samples/" />
   <Folder Name="/tests/">
+    <Project Path="tests/GrainWire.Bench.Tests/GrainWire.Bench.Tests.csproj" />
     <Project Path="tests/GrainWire.Tests/GrainWire.Tests.csproj" />
     <Project Path="tests/GrainWire.TestHost/GrainWire.TestHost.csproj" />
   </Folder>
