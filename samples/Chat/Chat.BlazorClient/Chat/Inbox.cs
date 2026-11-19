@@ -14,6 +14,7 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
     private readonly List<IDisposable> _subscriptions = [];
     private readonly List<InboxEvent> _pending = [];
     private IReadOnlyList<ChatSummary> _chats = [];
+    private string? _listOwner; // the user the list belongs to
     private Room<InboxView>? _room;
     private int _loads; // loads in progress; events that arrive during one are applied to its result
     private int _generation; // changes on every start and stop, so a stale start or close can tell
@@ -54,6 +55,17 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
         }
 
         int generation = await StopCoreAsync();
+        lock (_gate)
+        {
+            if (_listOwner != me)
+            {
+                // Another user than the one the list was loaded for: never show their chats.
+                _chats = [];
+                _pending.Clear();
+                _listOwner = me;
+            }
+        }
+
         try
         {
             GrainWireClient client = await connection.GetAsync();
@@ -95,6 +107,7 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
         {
             _chats = [];
             _pending.Clear();
+            _listOwner = null;
         }
 
         Error = null;

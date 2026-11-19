@@ -18,6 +18,10 @@
       <a href="." class="reload">Reload</a>
       <span class="dismiss">🗙</span>
     </div>
+    <script>
+      // Shows the newest message: the chat pane calls this after it draws.
+      window.chatScroll = (element) => { element.scrollTop = element.scrollHeight; };
+    </script>
     <script src="_framework/blazor.webassembly#[.{fingerprint}].js"></script>
   </body>
 </html>

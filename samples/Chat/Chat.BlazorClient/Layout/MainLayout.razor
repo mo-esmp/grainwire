@@ -1,0 +1,85 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject Session Session
+@inject Inbox Inbox
+@inject ChatConnection Connection
+@inject NavigationManager Navigation
+
+@if (!_loaded)
+{
+    <p class="loading">Loading…</p>
+}
+else
+{
+    @if (Session.IsSignedIn)
+    {
+        <header class="topbar">
+            <strong>GrainWire Chat</strong>
+            <span class="who" id="who">@Session.Username</span>
+            <button id="sign-out" type="button" @onclick="async () => await Session.SignOutAsync()">Sign out</button>
+        </header>
+        @if (ConnectionText is { Length: > 0 } offline)
+        {
+            <p class="banner" id="banner" role="status">@offline</p>
+        }
+    }
+
+    @Body
+}
+
+@code {
+    private bool _loaded;
+
+    private string ConnectionText => Connection.State == ConnectionState.Reconnecting
+        ? "Connection lost. Reconnecting…"
+        : "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        Session.Changed += OnSessionChanged;
+        Connection.StateChanged += OnConnectionChanged;
+
+        // The pages wait for this, so none of them sees "nobody is signed in" before the saved sign-in is read.
+        await Session.LoadAsync();
+        _loaded = true;
+    }
+
+    // Every way of signing out ends here: the button, and the sign-out ChatApi does when the server answers 401.
+    private void OnSessionChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            if (_loaded && !Session.IsSignedIn)
+            {
+                await Inbox.StopAsync();
+                if (!Navigation.Uri.TrimEnd('/').EndsWith("/login", StringComparison.Ordinal))
+                {
+                    Navigation.NavigateTo("login");
+                }
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    private void OnConnectionChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            StateHasChanged();
+
+            // The chat list could not be loaded earlier, for example because the server was down at sign-in. The
+            // connection is back, so try again.
+            if (Connection.State == ConnectionState.Connected && Session.IsSignedIn && Inbox.Error is not null)
+            {
+                await Inbox.StartAsync();
+            }
+        });
+    }
+
+    public void Dispose()
+    {
+        Session.Changed -= OnSessionChanged;
+        Connection.StateChanged -= OnConnectionChanged;
+    }
+}

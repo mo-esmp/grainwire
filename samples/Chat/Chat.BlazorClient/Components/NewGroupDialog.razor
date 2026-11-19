@@ -1,0 +1,74 @@
+@inject ChatApi Api
+
+<div class="backdrop">
+    <form class="dialog" role="dialog" aria-modal="true" aria-label="New group" @onsubmit="CreateAsync">
+        <h2>New group</h2>
+        <label>
+            Title
+            <input id="group-title" maxlength="60" @bind="_title" @bind:event="oninput" />
+        </label>
+        <UserSearch Placeholder="Add people…" Exclude="_users" OnPicked="Add" />
+        @if (_users.Count > 0)
+        {
+            <ul class="chosen">
+                @foreach (string user in _users)
+                {
+                    <li>
+                        <span>@user</span>
+                        <button type="button" aria-label="Remove @user" @onclick="() => _users.Remove(user)">×</button>
+                    </li>
+                }
+            </ul>
+        }
+        @if (_error is { Length: > 0 } error)
+        {
+            <p class="notice" id="group-error" role="alert">@error</p>
+        }
+        <div class="row">
+            <button id="create-group" class="primary" type="submit" disabled="@_busy">Create</button>
+            <button type="button" @onclick="OnCancel">Cancel</button>
+        </div>
+    </form>
+</div>
+
+@code {
+    private readonly List<string> _users = [];
+    private string _title = "";
+    private string? _error;
+    private bool _busy;
+
+    /// <summary>Called with the new group once the server has created it.</summary>
+    [Parameter, EditorRequired]
+    public EventCallback<ChatSummary> OnCreated { get; set; }
+
+    /// <summary>Called when the person closes the dialog without creating a group.</summary>
+    [Parameter, EditorRequired]
+    public EventCallback OnCancel { get; set; }
+
+    private void Add(string user)
+    {
+        if (!_users.Contains(user))
+        {
+            _users.Add(user);
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            ChatSummary group = await Api.CreateGroupAsync(_title, _users);
+            await OnCreated.InvokeAsync(group);
+        }
+        catch (ApiException error)
+        {
+            _error = error.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

@@ -1,0 +1,192 @@
+@implements IAsyncDisposable
+@inject IServiceProvider Services
+@inject Session Session
+@inject ChatApi Api
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+@if (_session?.Error is { } error)
+{
+    <section class="pane">
+        <p class="status" id="chat-error" role="alert">@error</p>
+        <p><a href="">Back to your chats</a></p>
+    </section>
+}
+else if (_session?.Chat is not { } chat)
+{
+    <section class="pane">
+        <p class="status">Connecting…</p>
+    </section>
+}
+else
+{
+    ChatSession session = _session;
+    bool group = chat.Kind == "group";
+
+    <section class="pane">
+        <header class="pane-head">
+            <div>
+                <h2 id="chat-title">@(group ? $"# {chat.Title}" : DirectTitle(chat))</h2>
+                @if (group)
+                {
+                    <p class="members" id="members">@string.Join(", ", chat.Members)</p>
+                }
+            </div>
+            @if (group)
+            {
+                <div class="actions">
+                    <button id="add-member" type="button" @onclick="() => _adding = !_adding">+ Add member</button>
+                    <button id="leave-group" type="button" @onclick="LeaveAsync">Leave group</button>
+                </div>
+            }
+        </header>
+        @if (group && _adding)
+        {
+            <UserSearch Placeholder="Add a member…" Exclude="chat.Members.ToArray()" OnPicked="AddMemberAsync" />
+        }
+        @if (session.Notice.Length > 0)
+        {
+            <p class="notice" id="notice" role="alert">@session.Notice</p>
+        }
+        <div class="messages" id="messages" @ref="_list">
+            @if (session.HasOlder)
+            {
+                <button id="load-older" class="older" type="button" @onclick="session.LoadOlderAsync">Load older</button>
+            }
+            @foreach (MessageDto message in session.Messages)
+            {
+                <p class="message @(message.Sender == Session.Username ? "mine" : "")">
+                    <span class="sender">@message.Sender</span>
+                    <span class="text">@message.Text</span>
+                    <time datetime="@message.SentAt.ToString("O")">@message.SentAt.ToLocalTime().ToString("HH:mm")</time>
+                </p>
+            }
+        </div>
+        <form class="send" @onsubmit="SendAsync">
+            <input id="message" maxlength="2000" placeholder="Type a message…" autocomplete="off"
+                   @bind="_text" @bind:event="oninput" />
+            <button id="send" class="primary" type="submit">Send</button>
+        </form>
+    </section>
+}
+
+@code {
+    private readonly SemaphoreSlim _switching = new(1, 1);
+    private ChatSession? _session;
+    private ElementReference _list;
+    private string? _openId;
+    private long _scrolledTo;
+    private string _text = "";
+    private bool _adding;
+    private bool _disposed;
+
+    /// <summary>The id of the chat to show. When it changes, the pane moves to the other chat.</summary>
+    [Parameter, EditorRequired]
+    public string ChatId { get; set; } = "";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // One switch at a time, and the old session is gone before the new one opens: both would join the same
+        // room if the user came back to a chat, and the old session's leave would close the new one.
+        await _switching.WaitAsync();
+        try
+        {
+            if (_disposed || ChatId == _openId)
+            {
+                return;
+            }
+
+            await CloseSessionAsync();
+            _openId = ChatId;
+            _scrolledTo = 0;
+            _text = "";
+            _adding = false;
+
+            ChatSession session = ActivatorUtilities.CreateInstance<ChatSession>(Services);
+            session.Changed += OnSessionChanged;
+            _session = session;
+            StateHasChanged();
+            await session.OpenAsync(ChatId);
+        }
+        finally
+        {
+            _switching.Release();
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Show the newest message, but not when older ones were loaded above.
+        long newest = _session?.Messages is { Count: > 0 } messages ? messages[^1].Id : 0;
+        if (newest != _scrolledTo && _list.Id is not null)
+        {
+            _scrolledTo = newest;
+            await JS.InvokeVoidAsync("chatScroll", _list);
+        }
+    }
+
+    private string DirectTitle(ChatView chat) =>
+        chat.Members.FirstOrDefault(member => member != Session.Username) ?? "Chat";
+
+    private async Task SendAsync()
+    {
+        string text = _text;
+        _text = "";
+        if (_session is { } session)
+        {
+            await session.SendAsync(text);
+        }
+    }
+
+    private async Task AddMemberAsync(string user)
+    {
+        try
+        {
+            await Api.AddMemberAsync(ChatId, user);
+            _adding = false;
+        }
+        catch (ApiException error)
+        {
+            _session?.Flash(error.Message);
+        }
+    }
+
+    private async Task LeaveAsync()
+    {
+        try
+        {
+            await Api.LeaveAsync(ChatId);
+            Navigation.NavigateTo("");
+        }
+        catch (ApiException error)
+        {
+            _session?.Flash(error.Message);
+        }
+    }
+
+    private void OnSessionChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private async Task CloseSessionAsync()
+    {
+        if (_session is { } session)
+        {
+            _session = null;
+            session.Changed -= OnSessionChanged;
+            await session.DisposeAsync();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        await _switching.WaitAsync();
+        try
+        {
+            await CloseSessionAsync();
+        }
+        finally
+        {
+            _switching.Release();
+        }
+    }
+}

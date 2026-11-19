@@ -1,0 +1,70 @@
+@page "/login"
+@inject Session Session
+@inject ChatApi Api
+@inject NavigationManager Navigation
+
+<PageTitle>GrainWire Chat</PageTitle>
+
+<main class="login">
+    <h1>GrainWire Chat</h1>
+    <p class="lead">
+        The Blazor client of the GrainWire chat sample. Sign in, or create an account to try it with a second browser.
+    </p>
+    <form @onsubmit="SignInAsync">
+        <label>
+            Username
+            <input id="username" maxlength="24" autocomplete="username" @bind="_username" @bind:event="oninput" />
+        </label>
+        <label>
+            Password
+            <input id="password" type="password" autocomplete="current-password" @bind="_password" @bind:event="oninput" />
+        </label>
+        @if (_error is { Length: > 0 } error)
+        {
+            <p class="notice" id="error" role="alert">@error</p>
+        }
+        <div class="row">
+            <button id="sign-in" class="primary" type="submit" disabled="@_busy">Sign in</button>
+            <button id="create-account" type="button" disabled="@_busy" @onclick="CreateAccountAsync">Create account</button>
+        </div>
+    </form>
+    <p class="hint">Usernames are 3 to 24 letters, numbers, or _ . - characters. Passwords are at least 8 characters.</p>
+</main>
+
+@code {
+    private string _username = "";
+    private string _password = "";
+    private string? _error;
+    private bool _busy;
+
+    protected override void OnInitialized()
+    {
+        if (Session.IsSignedIn)
+        {
+            Navigation.NavigateTo("", replace: true);
+        }
+    }
+
+    private Task SignInAsync() => RunAsync(() => Api.LoginAsync(_username, _password));
+
+    private Task CreateAccountAsync() => RunAsync(() => Api.RegisterAsync(_username, _password));
+
+    private async Task RunAsync(Func<Task<SignedIn>> request)
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            await Session.SignInAsync(await request());
+            Navigation.NavigateTo("");
+        }
+        catch (ApiException error)
+        {
+            _error = error.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

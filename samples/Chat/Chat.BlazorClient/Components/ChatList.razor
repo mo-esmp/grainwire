@@ -1,0 +1,32 @@
+<nav class="chat-list" aria-label="Your chats">
+    @if (Chats.Count == 0)
+    {
+        <p class="hint">No chats yet. Search for a user to start one.</p>
+    }
+    @foreach (ChatSummary chat in Chats)
+    {
+        <a class="chat-row @(chat.Id == SelectedId ? "selected" : "")" href="c/@chat.Id">
+            <span class="line">
+                <span class="title">@chat.Title</span>
+                @if (chat.Unread > 0)
+                {
+                    <span class="badge" aria-label="@chat.Unread unread">@chat.Unread</span>
+                }
+            </span>
+            @if (chat.LastMessage is { } last)
+            {
+                <span class="last">@last.Sender: @last.Text</span>
+            }
+        </a>
+    }
+</nav>
+
+@code {
+    /// <summary>The chats to list, in the order to show them.</summary>
+    [Parameter, EditorRequired]
+    public IReadOnlyList<ChatSummary> Chats { get; set; } = [];
+
+    /// <summary>The id of the chat on screen, which is marked.</summary>
+    [Parameter]
+    public string? SelectedId { get; set; }
+}
