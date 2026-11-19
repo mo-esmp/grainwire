@@ -19,10 +19,11 @@ using GrainWire.Server;
 // "run" starts three processes of this same program (one Orleans silo and two standalone gateways), drives them
 // with real MQTT clients over WebSockets, and prints the results. "silo" and "gateway" are those processes.
 //
-//   dotnet run -c Release --project bench/GrainWire.Bench -- idle [--connections 3000] [--factor 4] [--rooms-per-connection 1] [--out <file>]
+//   dotnet run -c Release --project bench/GrainWire.Bench -- idle [--connections 3000] [--factor 4] [--rooms-per-connection 1] [--out <file>] [--gcdump <directory>]
 //
 // "idle" measures what an idle connection costs the gateways, as the slope between two connection counts, each in
-// fresh processes. See docs/specs/2026-11-19-grainwire-on-mqttwire-design.md, section 6.
+// fresh processes. With --gcdump it also dumps the first gateway's heap in state 2 (dotnet-gcdump must be installed) and
+// attributes the bytes to their owners. See docs/specs/2026-11-19-grainwire-on-mqttwire-design.md, section 6.
 //
 //   dotnet run -c Release --project bench/GrainWire.Bench -- floor-run [--connections 3000] [--factor 4] [--tls] [--out <file>]
 //
@@ -38,7 +39,7 @@ return mode switch
     "silo" => await RunSilo(Arg("--http", 0), Arg("--silo-port", 0), Arg("--gateway-port", 0)),
     "gateway" => await RunGateway(Arg("--http", 0), Arg("--gateway-port", 0), Flag("--claims")),
     "run" => await RunBenchmark(Arg("--rooms", 5000), Arg("--members", 1000), Arg("--seconds", 30), Text("--out")),
-    "idle" => await RunIdle(Arg("--connections", 3000), Arg("--factor", 4), Arg("--rooms-per-connection", 1), Text("--out")),
+    "idle" => await RunIdle(Arg("--connections", 3000), Arg("--factor", 4), Arg("--rooms-per-connection", 1), Text("--out"), Text("--gcdump")),
     "floor" => await RunFloor(Arg("--http", 0), Flag("--tls")),
     "floor-run" => await RunFloorBenchmark(Arg("--connections", 3000), Arg("--factor", 4), Flag("--tls"), Text("--out")),
     _ => Fail($"Unknown mode '{mode}'. Use: run | idle | floor-run | silo | gateway | floor."),
@@ -347,7 +348,7 @@ static async Task BigRoom(int members, int seconds, string[] urls, int[] stats, 
 
 // ---------------------------------------------------------------- idle connections (step 0)
 
-static async Task<int> RunIdle(int connections, int factor, int roomsPerConnection, string? outFile)
+static async Task<int> RunIdle(int connections, int factor, int roomsPerConnection, string? outFile, string? gcdump)
 {
     CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
     StringBuilder report = new();
@@ -359,10 +360,11 @@ static async Task<int> RunIdle(int connections, int factor, int roomsPerConnecti
 
     Line(Machine());
     IdleStates small, large;
+    List<string> dumpFailures = [];
     try
     {
-        small = await IdleRun(connections, roomsPerConnection, Line);
-        large = await IdleRun(connections * factor, roomsPerConnection, Line);
+        small = await IdleRun(connections, roomsPerConnection, gcdump, dumpFailures, Line);
+        large = await IdleRun(connections * factor, roomsPerConnection, gcdump, dumpFailures, Line);
     }
     catch (Exception e)
     {
@@ -393,6 +395,34 @@ static async Task<int> RunIdle(int connections, int factor, int roomsPerConnecti
     Line($"- After churn (state 4), live managed bytes above the baseline: {Mb(small.AfterChurn.HeapBytes - small.Baseline.HeapBytes)} MB and {Mb(large.AfterChurn.HeapBytes - large.Baseline.HeapBytes)} MB");
     Line($"- Silo, per room in state 2: {silo.PerConnection:N0} bytes");
 
+    if (gcdump is not null)
+    {
+        string smallText = Path.Combine(gcdump, $"gateway-{small.Connections}.txt");
+        string largeText = Path.Combine(gcdump, $"gateway-{large.Connections}.txt");
+        Line();
+        if (dumpFailures.Count > 0 || !File.Exists(smallText) || !File.Exists(largeText))
+        {
+            Line($"- No attribution: {(dumpFailures.Count > 0 ? string.Join("; ", dumpFailures.Distinct()) : "a heap dump report is missing")}.");
+        }
+        else
+        {
+            // The first gateway carries half of the connections.
+            IReadOnlyDictionary<string, long> smallBuckets = HeapAttribution.Parse(await File.ReadAllTextAsync(smallText));
+            IReadOnlyDictionary<string, long> largeBuckets = HeapAttribution.Parse(await File.ReadAllTextAsync(largeText));
+            Line("Who owns the bytes in state 2, per connection on one gateway (slope between the two heap dumps):");
+            Line();
+            Line("| Owner | Bytes per connection |");
+            Line("|---|---|");
+            foreach (string bucket in HeapAttribution.Buckets)
+            {
+                Line($"| {bucket} | {Slope.Between(small.Connections / 2, smallBuckets[bucket], large.Connections / 2, largeBuckets[bucket]).PerConnection:N0} |");
+            }
+
+            Line();
+            Line("A type is counted under its own namespace, so the strings, arrays and tasks that belong to a library's objects are under \"Other\". Compare with the floor to see how much of \"Other\" comes with any WebSocket.");
+        }
+    }
+
     if (outFile is not null)
     {
         await File.WriteAllTextAsync(outFile, report.ToString());
@@ -402,7 +432,7 @@ static async Task<int> RunIdle(int connections, int factor, int roomsPerConnecti
 }
 
 /// <summary>One run of the idle workload in fresh processes: one silo and two gateways that give every connection three claims.</summary>
-static async Task<IdleStates> IdleRun(int connections, int roomsPerConnection, Action<string> log)
+static async Task<IdleStates> IdleRun(int connections, int roomsPerConnection, string? gcdump, List<string> dumpFailures, Action<string> log)
 {
     log($"Run with {connections:N0} connections:");
     int siloHttp = FreePort();
@@ -415,7 +445,20 @@ static async Task<IdleStates> IdleRun(int connections, int roomsPerConnection, A
         processes.Add(("first gateway", Spawn($"gateway --http {gatewayHttp[0]} --gateway-port {orleansGateway} --claims")));
         processes.Add(("second gateway", Spawn($"gateway --http {gatewayHttp[1]} --gateway-port {orleansGateway} --claims")));
         await Task.WhenAll(WaitForHealth(gatewayHttp[0]), WaitForHealth(gatewayHttp[1]));
-        IdleSetup setup = new(connections, roomsPerConnection, [.. gatewayHttp.Select(p => $"ws://127.0.0.1:{p}/mqtt")], gatewayHttp, siloHttp, AtJoined: null);
+        Func<Task>? atJoined = null;
+        if (gcdump is not null)
+        {
+            int firstGateway = processes[1].Process.Id;
+            atJoined = async () =>
+            {
+                if (await DumpHeap(firstGateway, gcdump, connections, log) is string failure)
+                {
+                    dumpFailures.Add(failure);
+                }
+            };
+        }
+
+        IdleSetup setup = new(connections, roomsPerConnection, [.. gatewayHttp.Select(p => $"ws://127.0.0.1:{p}/mqtt")], gatewayHttp, siloHttp, atJoined);
         return await IdleWorkload.RunAsync(setup, log);
     }
     catch (Exception e) when (processes.FirstOrDefault(p => p.Process.HasExited) is { Process: not null } gone)
@@ -425,6 +468,76 @@ static async Task<IdleStates> IdleRun(int connections, int roomsPerConnection, A
     finally
     {
         Kill(processes.Select(p => p.Process));
+    }
+}
+
+/// <summary>
+/// Takes a heap dump of a gateway with dotnet-gcdump and saves its report beside it. Returns what failed, or null.
+/// A failure never stops the idle run: the report then says there is no attribution.
+/// </summary>
+static async Task<string?> DumpHeap(int pid, string directory, int connections, Action<string> log)
+{
+    Directory.CreateDirectory(directory);
+    string dump = Path.Combine(directory, $"gateway-{connections}.gcdump");
+    string text = Path.ChangeExtension(dump, ".txt");
+    File.Delete(dump);
+    File.Delete(text);
+
+    Stopwatch watch = Stopwatch.StartNew();
+    (string? failure, _) = await RunTool(["collect", "-p", pid.ToString(CultureInfo.InvariantCulture), "-o", dump]);
+    if (failure is not null)
+    {
+        return failure;
+    }
+
+    (failure, string report) = await RunTool(["report", dump]);
+    if (failure is not null)
+    {
+        return failure;
+    }
+
+    await File.WriteAllTextAsync(text, report);
+    log($"- Heap dump of the first gateway in {watch.Elapsed.TotalSeconds:F1} s: {dump}");
+    return null;
+
+    static async Task<(string? Failure, string Output)> RunTool(string[] arguments)
+    {
+        ProcessStartInfo start = new("dotnet-gcdump") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (string argument in arguments)
+        {
+            start.ArgumentList.Add(argument);
+        }
+
+        string what = $"dotnet-gcdump {arguments[0]}";
+        Process process;
+        try
+        {
+            process = Process.Start(start)!;
+        }
+        catch (Exception e)
+        {
+            return ($"{what} could not be started ({e.Message})", "");
+        }
+
+        using (process)
+        {
+            Task<string> output = process.StandardOutput.ReadToEndAsync();
+            Task<string> error = process.StandardError.ReadToEndAsync();
+            using CancellationTokenSource limit = new(TimeSpan.FromMinutes(3));
+            try
+            {
+                await process.WaitForExitAsync(limit.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                process.Kill(entireProcessTree: true);
+                return ($"{what} took more than three minutes", "");
+            }
+
+            return process.ExitCode == 0
+                ? (null, await output)
+                : ($"{what} exited with code {process.ExitCode} ({(await error).Trim()})", "");
+        }
     }
 }
 
