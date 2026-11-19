@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using ChatSample.Server.Data;
+using ChatSample.Server.Rooms;
 
 namespace ChatSample.Server.Api;
 
@@ -31,24 +32,47 @@ public static class ChatEndpoints
         chats.MapGet("/", async (ClaimsPrincipal user, ChatStore store) =>
             Results.Ok(await store.ListChatsAsync(Caller(user))));
 
-        chats.MapPost("/direct", async (ClaimsPrincipal user, ChatStore store, TimeProvider time, DirectRequest request) =>
+        chats.MapPost("/direct", async (ClaimsPrincipal user, ChatStore store, RoomNotifier notifier, TimeProvider time, DirectRequest request) =>
         {
-            (ChatSummary chat, _) = await store.GetOrCreateDirectAsync(Caller(user), request.Username, time.GetUtcNow());
+            string me = Caller(user);
+            (ChatSummary chat, bool created) = await store.GetOrCreateDirectAsync(me, request.Username, time.GetUtcNow());
+            if (created)
+            {
+                TellAdded(notifier, chat, me);
+            }
+
             return Results.Ok(chat);
         });
 
-        chats.MapPost("/group", async (ClaimsPrincipal user, ChatStore store, TimeProvider time, GroupRequest request) =>
-            Results.Ok(await store.CreateGroupAsync(Caller(user), request.Title, request.Usernames ?? [], time.GetUtcNow())));
-
-        chats.MapPost("/{id}/members", async (ClaimsPrincipal user, ChatStore store, TimeProvider time, string id, AddMemberRequest request) =>
+        chats.MapPost("/group", async (ClaimsPrincipal user, ChatStore store, RoomNotifier notifier, TimeProvider time, GroupRequest request) =>
         {
-            await store.AddMemberAsync(Caller(user), id, request.Username, time.GetUtcNow());
+            string me = Caller(user);
+            ChatSummary chat = await store.CreateGroupAsync(me, request.Title, request.Usernames ?? [], time.GetUtcNow());
+            TellAdded(notifier, chat, me);
+            return Results.Ok(chat);
+        });
+
+        chats.MapPost("/{id}/members", async (ClaimsPrincipal user, ChatStore store, RoomNotifier notifier, TimeProvider time, string id, AddMemberRequest request) =>
+        {
+            if (await store.AddMemberAsync(Caller(user), id, request.Username, time.GetUtcNow()))
+            {
+                // The store accepted the name, so it is valid.
+                string added = Rules.NormalizeUsername(request.Username)!;
+                notifier.Inbox(added, new InboxNotice("added", id, null));
+                await notifier.ChatMemberAddedAsync(id, added);
+            }
+
             return Results.NoContent();
         });
 
-        chats.MapDelete("/{id}/members/me", async (ClaimsPrincipal user, ChatStore store, string id) =>
+        chats.MapDelete("/{id}/members/me", async (ClaimsPrincipal user, ChatStore store, RoomNotifier notifier, string id) =>
         {
-            await store.LeaveAsync(Caller(user), id);
+            string me = Caller(user);
+            await store.LeaveAsync(me, id);
+
+            // The leaver's other tabs drop the chat from their list.
+            notifier.Inbox(me, new InboxNotice("removed", id, null));
+            await notifier.ChatMemberLeftAsync(id, me);
             return Results.NoContent();
         });
 
@@ -63,6 +87,15 @@ public static class ChatEndpoints
     }
 
     private static string Caller(ClaimsPrincipal user) => user.FindFirst("sub")!.Value;
+
+    /// <summary>Tells every member of a new chat except the one who made it.</summary>
+    private static void TellAdded(RoomNotifier notifier, ChatSummary chat, string creator)
+    {
+        foreach (string member in chat.Members.Where(m => m != creator))
+        {
+            notifier.Inbox(member, new InboxNotice("added", chat.Id, null));
+        }
+    }
 
     /// <summary>Turns a refused request (<see cref="ChatException"/>) into a problem answer: 404, 400 or 409.</summary>
     private static async ValueTask<object?> ChatExceptionFilter(EndpointFilterInvocationContext context, EndpointFilterDelegate next)

@@ -15,6 +15,8 @@ public static class AuthEndpoints
 {
     private const string WrongLogin = "Wrong username or password.";
 
+    private static string? s_dummyHash;
+
     /// <summary>Maps register and login under the given group.</summary>
     public static void MapAuth(this RouteGroupBuilder api)
     {
@@ -50,12 +52,18 @@ public static class AuthEndpoints
         string? hash = name is null ? null : await store.GetPasswordHashAsync(name);
 
         // An unknown user and a wrong password get the same answer, so the API does not reveal which names exist.
-        if (name is null || hash is null
-            || hasher.VerifyHashedPassword(name, hash, request.Password ?? "") == PasswordVerificationResult.Failed)
+        // An unknown user is checked against a dummy hash, so both take as long as one password check.
+        bool verified = hasher.VerifyHashedPassword(name ?? "", hash ?? DummyHash(hasher), request.Password ?? "")
+            != PasswordVerificationResult.Failed;
+        if (name is null || hash is null || !verified)
         {
             return Results.Problem(detail: WrongLogin, statusCode: StatusCodes.Status401Unauthorized);
         }
 
         return Results.Ok(new SignedIn(tokens.Issue(name), name));
     }
+
+    /// <summary>A hash of a password nobody has, made once with the server's own hasher settings.</summary>
+    private static string DummyHash(PasswordHasher<string> hasher) =>
+        s_dummyHash ??= hasher.HashPassword("", Guid.NewGuid().ToString("N"));
 }

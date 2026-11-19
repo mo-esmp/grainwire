@@ -1,6 +1,7 @@
 using ChatSample.Server.Api;
 using ChatSample.Server.Auth;
 using ChatSample.Server.Data;
+using ChatSample.Server.Rooms;
 using GrainWire;
 using GrainWire.Server;
 using Microsoft.AspNetCore.Identity;
@@ -37,6 +38,7 @@ public static class ChatServerHost
         string database = config["Chat:Database"] ?? "Data Source=chat.db";
         builder.Services.AddDbContextFactory<ChatDb>(o => o.UseSqlite(database));
         builder.Services.AddSingleton<ChatStore>();
+        builder.Services.AddSingleton<RoomNotifier>();
         builder.Services.AddSingleton(jwt);
         builder.Services.AddSingleton<TokenService>();
         builder.Services.AddSingleton(TimeProvider.System);
