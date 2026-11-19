@@ -310,6 +310,16 @@ public sealed class ChatSession(ChatConnection connection, ChatApi api, Inbox in
     {
         lock (_gate)
         {
+            if (!older && incoming.Count >= PageSize && _messages.Count > 0 && incoming[0].Id > _messages[^1].Id)
+            {
+                // A full newest page that starts after everything loaded: messages in between may be missing, and
+                // "load older" would never reach them. Start again from this page.
+                _messages = [.. incoming.OrderBy(message => message.Id)];
+                _hasOlder = true;
+                Notify();
+                return;
+            }
+
             long oldest = _messages.Count > 0 ? _messages[0].Id : long.MaxValue;
             SortedDictionary<long, MessageDto> merged = new();
             foreach (MessageDto message in _messages)
