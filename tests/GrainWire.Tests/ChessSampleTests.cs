@@ -41,6 +41,18 @@ public class ChessSampleTests
     }
 
     [Fact]
+    public void A_check_that_is_not_mate_is_reported_and_the_game_goes_on()
+    {
+        string fen = ChessRules.StartFen;
+        Assert.False(Play(ref fen, "e2", "e4").Check);
+        Play(ref fen, "f7", "f5");
+        ChessRules.MoveOutcome check = Play(ref fen, "d1", "h5");
+        Assert.True(check.Check);
+        Assert.Null(check.Result);
+        Assert.False(Play(ref fen, "g7", "g6").Check);    // black blocks the check
+    }
+
+    [Fact]
     public void Castling_is_entered_as_a_king_move()
     {
         string fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1";

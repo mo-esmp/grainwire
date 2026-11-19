@@ -9,6 +9,7 @@
 public sealed record GameView(
     string Fen,
     string Turn,
+    bool Check,
     string Status,
     string? White,
     string? Black,

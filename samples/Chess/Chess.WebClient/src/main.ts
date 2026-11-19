@@ -10,6 +10,8 @@ import type { Color } from "./board";
 interface GameView {
   fen: string;
   turn: Color;
+  /** True when the side to move is in check. */
+  check: boolean;
   status: "waiting" | "playing" | "finished";
   white: string | null;
   black: string | null;
@@ -45,7 +47,6 @@ let clockOffset = 0; // server time minus this computer's time
 let selected: string | undefined;
 let notice = "";
 let closedMessage = "";
-let check = false;
 let clockTimer: ReturnType<typeof setInterval> | undefined;
 
 /** A press on one of your pieces. It becomes a drag once the pointer has moved a little. */
@@ -135,7 +136,6 @@ async function openGame(id: string, createWithMinutes: number | undefined): Prom
   room.onSnapshot((view) => {
     game = structuredClone(view);
     clockOffset = Date.parse(view.serverNow) - Date.now();
-    check = false;
     selected = undefined;
     render();
   });
@@ -147,8 +147,7 @@ async function openGame(id: string, createWithMinutes: number | undefined): Prom
   room.on<Moved>("moved", (moved) => {
     if (!game) return;
     game.moves.push(moved.san);
-    Object.assign(game, { fen: moved.fen, turn: moved.turn, lastFrom: moved.from, lastTo: moved.to, whiteMs: moved.whiteMs, blackMs: moved.blackMs, turnStartedAt: moved.at });
-    check = moved.check;
+    Object.assign(game, { fen: moved.fen, turn: moved.turn, check: moved.check, lastFrom: moved.from, lastTo: moved.to, whiteMs: moved.whiteMs, blackMs: moved.blackMs, turnStartedAt: moved.at });
     selected = undefined;
     render();
   });
@@ -243,7 +242,7 @@ function statusText(): string {
 
   const mover = game.turn === "white" ? game.white : game.black;
   const turn = seat === game.turn ? "Your move" : `${mover ?? game.turn} to move`;
-  return check ? `${turn}. Check!` : `${turn}.`;
+  return game.check ? `${turn}. Check!` : `${turn}.`;
 }
 
 /** Tells a player how to enter a move: by dragging, or with two clicks. It changes once a piece is picked by a click. */

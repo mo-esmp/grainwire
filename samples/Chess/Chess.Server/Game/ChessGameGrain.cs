@@ -68,6 +68,7 @@ public class ChessGameGrain : RoomGrain<GameState>
 
         State.Fen = outcome.Fen;
         State.Turn = outcome.Turn;
+        State.Check = outcome.Check;
         State.Moves.Add(outcome.San);
         State.LastFrom = request.From;
         State.LastTo = request.To;
@@ -132,7 +133,7 @@ public class ChessGameGrain : RoomGrain<GameState>
     /// Chess has no hidden information, so every viewer sees the same thing.
     /// </summary>
     protected override object GetSnapshot(PlayerId viewer) => new GameView(
-        State.Fen, State.Turn, State.Status, State.White, State.Black, State.Moves, State.LastFrom, State.LastTo,
+        State.Fen, State.Turn, State.Check, State.Status, State.White, State.Black, State.Moves, State.LastFrom, State.LastTo,
         State.WhiteMs, State.BlackMs, State.InitialMs, State.TurnStartedAt, State.Result, State.Reason, Now);
 
     private void Finish(string result, string reason)
@@ -194,6 +195,11 @@ public sealed class GameState
     [Id(12)] public string? Result { get; set; }
 
     [Id(13)] public string? Reason { get; set; }
+
+    /// <summary>
+    /// True when the side to move is in check. It is in the snapshot, so a player who reconnects still sees it.
+    /// </summary>
+    [Id(14)] public bool Check { get; set; }
 }
 
 public sealed record CreateGameOptions(int? Minutes);
@@ -203,6 +209,7 @@ public sealed record MoveRequest(string From, string To, string? Promotion = nul
 public sealed record GameView(
     string Fen,
     string Turn,
+    bool Check,
     string Status,
     string? White,
     string? Black,

@@ -38,9 +38,9 @@ public sealed class GameSession(ChessConnection connection) : IAsyncDisposable
     public string? Selected { get; private set; }
 
     /// <summary>
-    /// True when the last move gave check.
+    /// True when the side to move is in check.
     /// </summary>
-    public bool Check { get; private set; }
+    public bool Check => Game?.Check ?? false;
 
     /// <summary>
     /// A short message for the player, such as why a move was refused. It clears itself after a few seconds.
@@ -127,7 +127,6 @@ public sealed class GameSession(ChessConnection connection) : IAsyncDisposable
             // The list is copied, because the events that follow are applied to it.
             Show(view with { Moves = [.. view.Moves] });
             _clockOffset = view.ServerNow - DateTimeOffset.UtcNow;
-            Check = false;
             Selected = null;
             Notify();
         }));
@@ -155,13 +154,13 @@ public sealed class GameSession(ChessConnection connection) : IAsyncDisposable
             {
                 Fen = moved.Fen,
                 Turn = moved.Turn,
+                Check = moved.Check,
                 LastFrom = moved.From,
                 LastTo = moved.To,
                 WhiteMs = moved.WhiteMs,
                 BlackMs = moved.BlackMs,
                 TurnStartedAt = moved.At,
             });
-            Check = moved.Check;
             Selected = null;
             Notify();
         }));
