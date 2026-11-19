@@ -9,4 +9,7 @@
     <ShouldRunNpmInstall>false</ShouldRunNpmInstall>
     <ShouldRunBuildScript>false</ShouldRunBuildScript>
   </PropertyGroup>
+  <!-- dotnet pack runs over the whole solution, and this project type has no Pack target of its own.
+       The page is not a NuGet package, so packing it does nothing. -->
+  <Target Name="Pack" />
 </Project>
