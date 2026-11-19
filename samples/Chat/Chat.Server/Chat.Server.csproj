@@ -7,6 +7,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Orleans.Server" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
     <ProjectReference Include="../../../src/GrainWire.Abstractions/GrainWire.Abstractions.csproj" />
     <ProjectReference Include="../../../src/GrainWire.Server/GrainWire.Server.csproj" />
   </ItemGroup>
