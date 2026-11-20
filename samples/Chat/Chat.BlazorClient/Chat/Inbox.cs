@@ -18,6 +18,8 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
     private string? _listOwner; // the user the list belongs to
     private Room<InboxView>? _room;
     private int _loads; // loads in progress; events that arrive during one are applied to its result
+    private long _loadsStarted; // numbers each load in the order it was asked for
+    private long _loadApplied; // the number of the load whose list is shown; older ones are dropped
     private int _generation; // changes on every start and stop, so a stale start or close can tell
 
     /// <summary>Called whenever the list or the error changes. It can be called on any thread.</summary>
@@ -286,10 +288,12 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
     private async Task ReloadAsync()
     {
         int generation;
+        long version;
         lock (_gate)
         {
             _loads++;
             generation = _generation;
+            version = ++_loadsStarted;
         }
 
         try
@@ -297,26 +301,35 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
             IReadOnlyList<ChatSummary> loaded = await api.ListChatsAsync();
             lock (_gate)
             {
-                if (generation != _generation)
+                // Stopped or started again meanwhile (this list may belong to the user before), or a load that was
+                // asked for later has already been applied: either way this list is out of date.
+                if (generation != _generation || version < _loadApplied)
                 {
-                    // Stopped or started again meanwhile: this list may belong to the user before.
                     return;
                 }
 
                 // The loaded list replaces the old one. Events that came in while it loaded are applied on top;
                 // those it already includes are skipped.
+                _loadApplied = version;
                 _chats = loaded;
                 foreach (InboxEvent activity in _pending)
                 {
                     TryApplyActivityLocked(activity);
                 }
-            }
 
-            Error = null;
+                Error = null;
+            }
         }
         catch (ApiException error)
         {
-            Error = error.Message;
+            lock (_gate)
+            {
+                // An out-of-date load that failed says nothing about the list shown now.
+                if (generation == _generation && version > _loadApplied)
+                {
+                    Error = error.Message;
+                }
+            }
         }
         finally
         {

@@ -210,6 +210,28 @@ public sealed class ChatStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Two_users_added_at_once_cannot_both_take_a_groups_last_place()
+    {
+        ChatStore store = NewStore();
+        List<string> others = [];
+        for (int i = 0; i < Rules.MaxGroupMembers - 2; i++)
+        {
+            string name = $"member{i:000}";
+            Assert.True(await store.AddUserAsync(name, "x", T0));
+            others.Add(name);
+        }
+
+        string id = (await store.CreateGroupAsync("alice", "full", others, T0)).Id; // one place left
+        Task<bool> addBob = Task.Run(() => store.AddMemberAsync("alice", id, "bob", T0));
+        Task<bool> addCarol = Task.Run(() => store.AddMemberAsync("alice", id, "carol", T0));
+        Task both = Task.WhenAll(addBob, addCarol);
+        await Assert.ThrowsAsync<ChatException>(() => both);
+
+        Assert.Equal(1, new[] { addBob, addCarol }.Count(t => t.IsCompletedSuccessfully));
+        Assert.Equal(Rules.MaxGroupMembers, (await store.GetChatInfoAsync(id))!.Members.Count);
+    }
+
+    [Fact]
     public async Task A_read_marker_past_the_newest_message_does_not_hide_later_ones()
     {
         ChatStore store = NewStore();

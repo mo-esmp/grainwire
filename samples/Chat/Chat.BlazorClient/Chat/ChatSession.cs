@@ -19,7 +19,8 @@ public sealed class ChatSession(ChatConnection connection, ChatApi api, Inbox in
     private IReadOnlyList<MessageDto> _messages = [];
     private Room<ChatView>? _room;
     private string? _chatId;
-    private long _markedRead;
+    private long _markedRead;   // the read position the server has confirmed
+    private long _markingRead;  // the read position being sent now, or 0
     private bool _hasOlder;
     private bool _disposed;
     private bool _retryWhenConnected;
@@ -314,10 +315,18 @@ public sealed class ChatSession(ChatConnection connection, ChatApi api, Inbox in
             return;
         }
 
+        // The newest message shown before the page is asked for. Taken now, before any event that arrives during the
+        // request, so a live message can't hide that the page starts after a gap.
+        long? shownBefore;
+        lock (_gate)
+        {
+            shownBefore = _messages.Count > 0 ? _messages[^1].Id : null;
+        }
+
         try
         {
             IReadOnlyList<MessageDto> page = await api.GetMessagesAsync(chatId, null);
-            Merge(page, older: false);
+            Merge(page, older: false, shownBefore);
             await MarkNewestReadAsync();
         }
         catch (ApiException error)
@@ -328,17 +337,20 @@ public sealed class ChatSession(ChatConnection connection, ChatApi api, Inbox in
 
     /// <summary>
     /// Adds messages to the list, which stays sorted by id, without duplicates. A page of the newest messages that
-    /// reaches back before everything loaded so far also tells whether older ones remain.
+    /// reaches back before everything loaded so far also tells whether older ones remain. For a newest page,
+    /// <paramref name="shownBefore"/> is the newest message that was shown when the page was asked for.
     /// </summary>
-    private void Merge(IReadOnlyList<MessageDto> incoming, bool older)
+    private void Merge(IReadOnlyList<MessageDto> incoming, bool older, long? shownBefore = null)
     {
         lock (_gate)
         {
-            if (!older && incoming.Count >= PageSize && _messages.Count > 0 && incoming[0].Id > _messages[^1].Id)
+            if (!older && shownBefore is { } shown && incoming.Count >= PageSize && incoming[0].Id > shown)
             {
-                // A full newest page that starts after everything loaded: messages in between may be missing, and
-                // "load older" would never reach them. Start again from this page.
-                _messages = [.. incoming.OrderBy(message => message.Id)];
+                // A full newest page that starts after what was shown: messages in between may be missing, and
+                // "load older" would never reach them. Start again from this page, keeping only the live messages
+                // that came in after it.
+                long pageNewest = incoming[^1].Id;
+                _messages = [.. incoming.Concat(_messages.Where(message => message.Id > pageNewest)).OrderBy(message => message.Id)];
                 _hasOlder = true;
                 Notify();
                 return;
@@ -383,23 +395,39 @@ public sealed class ChatSession(ChatConnection connection, ChatApi api, Inbox in
         long newest;
         lock (_gate)
         {
-            if (_messages.Count == 0 || _chatId is not { } || _messages[^1].Id <= _markedRead)
+            // Skipped only when the server already has this position, or a request for it is on its way.
+            if (_messages.Count == 0 || _chatId is not { } || _messages[^1].Id <= Math.Max(_markedRead, _markingRead))
             {
                 return;
             }
 
             newest = _messages[^1].Id;
-            _markedRead = newest;
+            _markingRead = newest;
         }
 
         inbox.MarkReadLocally(_chatId!);
         try
         {
             await api.MarkReadAsync(_chatId!, newest);
+            lock (_gate)
+            {
+                _markedRead = Math.Max(_markedRead, newest);
+            }
         }
         catch (ApiException error)
         {
             OnApiError(error);
+        }
+        finally
+        {
+            // A failed position becomes eligible again, so the next snapshot or message retries it.
+            lock (_gate)
+            {
+                if (_markingRead == newest)
+                {
+                    _markingRead = 0;
+                }
+            }
         }
     }
 

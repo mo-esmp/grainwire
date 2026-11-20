@@ -218,6 +218,10 @@ public sealed class ChatStore(IDbContextFactory<ChatDb> dbs)
     {
         string me = Rules.NormalizeUsername(caller) ?? throw new ChatException(ChatError.NotFound, "No such chat.");
         await using ChatDb db = await dbs.CreateDbContextAsync();
+
+        // Every check and the insert run in one transaction that takes SQLite's write lock at its start (BEGIN
+        // IMMEDIATE). Two people adding different users can't both see a free last place.
+        await using IDbContextTransaction transaction = await db.Database.BeginTransactionAsync();
         if (!await db.Members.AnyAsync(m => m.ChatId == chatId && m.Username == me))
         {
             throw new ChatException(ChatError.NotFound, "No such chat.");
@@ -247,16 +251,9 @@ public sealed class ChatStore(IDbContextFactory<ChatDb> dbs)
 
         long newest = await db.Messages.Where(m => m.ChatId == chatId).MaxAsync(m => (long?)m.Id) ?? 0;
         db.Members.Add(NewMember(chatId, name, now, newest));
-        try
-        {
-            await db.SaveChangesAsync();
-            return true;
-        }
-        catch (DbUpdateException)
-        {
-            // Someone added the same user between the check and the save.
-            return false;
-        }
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+        return true;
     }
 
     /// <summary>Removes the caller from a group.</summary>
