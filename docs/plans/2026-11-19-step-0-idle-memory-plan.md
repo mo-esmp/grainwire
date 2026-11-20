@@ -8,7 +8,7 @@
 
 **Tech Stack:** .NET 10, C# 14, ASP.NET Core WebSockets, MQTTnet 5 client (load generator, already referenced), xunit, `dotnet-gcdump`.
 
-**Spec:** [docs/specs/2026-11-19-grainwire-on-mqttwire-design.md](../specs/2026-11-19-grainwire-on-mqttwire-design.md), section 6 ("Step 0"), and section 7 row 0. The floor is also section 6.14 of [the MqttWire design](../specs/2026-11-19-mqttwire-design.md).
+**Spec:** [docs/specs/2026-11-19-grainwire-on-mqttwire-design.md](https://github.com/mo-esmp/mqttwire/blob/main/docs/specs/2026-11-19-grainwire-on-mqttwire-design.md) in the mqttwire repository, section 6 ("Step 0"), and section 7 row 0. The floor is also section 6.14 of [the MqttWire design](../specs/2026-11-19-mqttwire-design.md).
 
 This is the first of several plans. The others (MqttWire's codec, client and server; GrainWire's client and gateway; the final measurement) are written one at a time, **after the owner has seen this step's report**, because the report can change them.
 

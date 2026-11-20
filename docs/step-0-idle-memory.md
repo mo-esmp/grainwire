@@ -1,7 +1,7 @@
 # Step 0: what an idle connection costs today
 
 Measured on 19 November 2026, before anything of MqttWire is built, as section 6 of
-[the GrainWire-on-MqttWire design](specs/2026-11-19-grainwire-on-mqttwire-design.md) asks.
+[the GrainWire-on-MqttWire design](https://github.com/mo-esmp/mqttwire/blob/main/docs/specs/2026-11-19-grainwire-on-mqttwire-design.md) (in the mqttwire repository) asks.
 The plan was [docs/plans/2026-11-19-step-0-idle-memory-plan.md](plans/2026-11-19-step-0-idle-memory-plan.md).
 
 ## 1. The result in three lines

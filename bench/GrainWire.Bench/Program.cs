@@ -23,7 +23,8 @@ using GrainWire.Server;
 //
 // "idle" measures what an idle connection costs the gateways, as the slope between two connection counts, each in
 // fresh processes. With --gcdump it also dumps the first gateway's heap in state 2 (dotnet-gcdump must be installed) and
-// attributes the bytes to their owners. See docs/specs/2026-11-19-grainwire-on-mqttwire-design.md, section 6.
+// attributes the bytes to their owners. See docs/specs/2026-11-19-grainwire-on-mqttwire-design.md, section 6, in the
+// mqttwire repository.
 //
 //   dotnet run -c Release --project bench/GrainWire.Bench -- floor-run [--connections 3000] [--factor 4] [--tls] [--out <file>]
 //

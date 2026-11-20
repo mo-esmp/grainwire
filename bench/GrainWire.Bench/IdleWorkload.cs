@@ -27,7 +27,8 @@ public sealed record IdleSetup(
 
 /// <summary>
 /// Idle connections on today's gateway, in four states: connected and subscribed; joined (rooms of two); active, then
-/// idle; and after churn, when everyone has gone and come back. See section 6 of docs/specs/2026-11-19-grainwire-on-mqttwire-design.md.
+/// idle; and after churn, when everyone has gone and come back. See section 6 of
+/// docs/specs/2026-11-19-grainwire-on-mqttwire-design.md in the mqttwire repository.
 /// </summary>
 public static class IdleWorkload
 {
