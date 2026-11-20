@@ -25,9 +25,20 @@ public class IdleChecksTests
     }
 
     [Fact]
-    public void Every_client_with_all_its_deliveries_passes()
+    public void Every_client_with_all_its_deliveries_passes_with_none_missing()
     {
-        IdleChecks.RequireDeliveries([40, 40, 41, 40], expectedEach: 40);
+        Assert.Equal(0, IdleChecks.RequireDeliveries([40, 40, 41, 40], expectedEach: 40));
+    }
+
+    [Fact]
+    public void A_small_loss_passes_and_is_counted()
+    {
+        // The full run at 3,000 connections: two clients were each one event short. The gateway publishes at QoS 0 and skips
+        // a batch that comes more than 250 ms late, so a few events can be lost by design.
+        long[] received = [.. Enumerable.Repeat(40L, 3_000)];
+        received[17] = 39;
+        received[2_404] = 39;
+        Assert.Equal(2, IdleChecks.RequireDeliveries(received, expectedEach: 40));
     }
 
     [Fact]
@@ -35,7 +46,7 @@ public class IdleChecksTests
     {
         // Two clients, 40 commands, every "said" event dropped by the gateway: the commands all succeeded, nothing arrived.
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(() => IdleChecks.RequireDeliveries([0, 0], expectedEach: 40));
-        Assert.Equal("Only 0 of 80 deliveries arrived in the activity phase; 2 of 2 clients are short. The fan-out was not exercised.", error.Message);
+        Assert.Equal("80 of 80 deliveries never arrived in the activity phase; 2 of 2 clients are short, the worst by 40 of 40. At most 0.1% in all and 4 per client are tolerated: the fan-out was not exercised.", error.Message);
     }
 
     [Fact]
@@ -43,7 +54,43 @@ public class IdleChecksTests
     {
         // One client got the deliveries of another twice over; the aggregate (160) hides the receiver that got nothing.
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(() => IdleChecks.RequireDeliveries([40, 80, 0, 40], expectedEach: 40));
-        Assert.Equal("Only 120 of 160 deliveries arrived in the activity phase; 1 of 4 clients are short. The fan-out was not exercised.", error.Message);
+        Assert.Equal("40 of 160 deliveries never arrived in the activity phase; 1 of 4 clients are short, the worst by 40 of 40. At most 0.1% in all and 4 per client are tolerated: the fan-out was not exercised.", error.Message);
+    }
+
+    [Fact]
+    public void One_client_missing_more_than_a_tenth_stops_the_run_though_the_total_is_small()
+    {
+        // 5 of 120,000 is far under 0.1%, but one client lost 5 of its 40.
+        long[] received = [.. Enumerable.Repeat(40L, 3_000)];
+        received[9] = 35;
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(() => IdleChecks.RequireDeliveries(received, expectedEach: 40));
+        Assert.StartsWith("5 of 120,000 deliveries never arrived in the activity phase; 1 of 3,000 clients are short, the worst by 5 of 40.", error.Message);
+    }
+
+    [Fact]
+    public void A_loss_of_more_than_a_thousandth_stops_the_run_though_no_client_is_far_short()
+    {
+        // 121 clients one short each: 121 of 120,000 is just over 0.1%.
+        long[] received = [.. Enumerable.Repeat(40L, 3_000)];
+        for (int i = 0; i < 121; i++)
+        {
+            received[i] = 39;
+        }
+
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(() => IdleChecks.RequireDeliveries(received, expectedEach: 40));
+        Assert.StartsWith("121 of 120,000 deliveries never arrived", error.Message);
+    }
+
+    [Fact]
+    public void A_loss_of_exactly_a_thousandth_passes()
+    {
+        long[] received = [.. Enumerable.Repeat(40L, 3_000)];
+        for (int i = 0; i < 120; i++)
+        {
+            received[i] = 39;
+        }
+
+        Assert.Equal(120, IdleChecks.RequireDeliveries(received, expectedEach: 40));
     }
 
     [Theory]

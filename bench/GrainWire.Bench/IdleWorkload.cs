@@ -11,7 +11,9 @@ public sealed record IdleStates(
     HeapSample ActiveThenIdle,  // state 3
     HeapSample AfterChurn,      // state 4: everyone gone
     HeapSample JoinedAgain,     // state 2 again, after everyone came back
-    HeapSample SiloJoined);     // the silo in state 2, for information
+    HeapSample SiloJoined,      // the silo in state 2, for information
+    long ExpectedDeliveries,    // state 3's "said" events, over all clients
+    long MissingDeliveries);    // of those, the ones that never arrived
 
 /// <param name="AtJoined">Called in state 2, after its sample; Task 4 takes its heap dump here.</param>
 public sealed record IdleSetup(
@@ -95,9 +97,10 @@ public static class IdleWorkload
             });
             IdleChecks.RequireNoFailures(failed);
             await BenchClient.WaitForSaidAsync(clients, SaidPerClient, s_deliveryLimit);
-            IdleChecks.RequireDeliveries([.. clients.Select(client => client?.SaidReceived ?? 0)], SaidPerClient);
+            long missing = IdleChecks.RequireDeliveries([.. clients.Select(client => client?.SaidReceived ?? 0)], SaidPerClient);
             await BenchClient.WaitForQuietAsync();
-            log($"- {setup.Connections * CommandsPerClient:N0} commands and {(long)setup.Connections * SaidPerClient:N0} deliveries in {watch.Elapsed.TotalSeconds:F1} s");
+            long expected = (long)setup.Connections * SaidPerClient;
+            log($"- {setup.Connections * CommandsPerClient:N0} commands and {expected - missing:N0} of {expected:N0} deliveries in {watch.Elapsed.TotalSeconds:F1} s");
             HeapSample stateActive = await SampleGateways();
 
             // State 4: everyone gone.
@@ -113,7 +116,7 @@ public static class IdleWorkload
             await BenchClient.WaitForQuietAsync();
             HeapSample stateJoinedAgain = await SampleGateways();
 
-            return new IdleStates(setup.Connections, baseline, stateConnected, stateJoined, stateActive, stateChurned, stateJoinedAgain, silo);
+            return new IdleStates(setup.Connections, baseline, stateConnected, stateJoined, stateActive, stateChurned, stateJoinedAgain, silo, expected, missing);
         }
         finally
         {

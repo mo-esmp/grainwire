@@ -394,6 +394,7 @@ static async Task<int> RunIdle(int connections, int factor, int roomsPerConnecti
     Line($"- Kept after activity, per connection (state 3 − state 2): {Heap(s => s.ActiveThenIdle).PerConnection - Heap(s => s.Joined).PerConnection:N0} bytes");
     Line($"- After churn (state 4), live managed bytes above the baseline: {Mb(small.AfterChurn.HeapBytes - small.Baseline.HeapBytes)} MB and {Mb(large.AfterChurn.HeapBytes - large.Baseline.HeapBytes)} MB");
     Line($"- Silo, per room in state 2: {silo.PerConnection:N0} bytes");
+    Line($"- State 3 deliveries that never arrived (QoS 0; at most 0.1% in all and a tenth of a client's are tolerated): {small.MissingDeliveries:N0} of {small.ExpectedDeliveries:N0} and {large.MissingDeliveries:N0} of {large.ExpectedDeliveries:N0}");
 
     if (gcdump is not null)
     {
