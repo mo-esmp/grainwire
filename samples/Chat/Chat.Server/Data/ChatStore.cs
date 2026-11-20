@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace ChatSample.Server.Data;
 
@@ -316,11 +317,16 @@ public sealed class ChatStore(IDbContextFactory<ChatDb> dbs)
         return page.Select(ToDto).ToList();
     }
 
-    /// <summary>Marks messages up to <paramref name="messageId"/> as read. The marker never moves back.</summary>
+    /// <summary>
+    /// Marks messages up to <paramref name="messageId"/> as read. The marker never moves back, and never past the
+    /// chat's newest message, so a made-up id cannot hide messages that arrive later.
+    /// </summary>
     public async Task MarkReadAsync(string caller, string chatId, long messageId)
     {
         await using ChatDb db = await dbs.CreateDbContextAsync();
         Member member = await FindMemberAsync(db, caller, chatId);
+        long newest = await db.Messages.Where(m => m.ChatId == chatId).MaxAsync(m => (long?)m.Id) ?? 0;
+        messageId = Math.Min(messageId, newest);
         if (messageId > member.LastReadMessageId)
         {
             member.LastReadMessageId = messageId;
@@ -362,6 +368,10 @@ public sealed class ChatStore(IDbContextFactory<ChatDb> dbs)
         }
 
         await using ChatDb db = await dbs.CreateDbContextAsync();
+
+        // The transaction starts before the membership check. SQLite takes the write lock at its start (BEGIN
+        // IMMEDIATE), so a leave can't slip in between the check and the insert.
+        await using IDbContextTransaction transaction = await db.Database.BeginTransactionAsync();
         Member? member = await db.Members.FirstOrDefaultAsync(m => m.ChatId == chatId && m.Username == name);
         if (member is null)
         {
@@ -369,7 +379,6 @@ public sealed class ChatStore(IDbContextFactory<ChatDb> dbs)
         }
 
         Chat chat = await db.Chats.FirstAsync(c => c.Id == chatId);
-        await using var transaction = await db.Database.BeginTransactionAsync();
         var message = new Message { ChatId = chatId, Sender = name, Text = text, SentAt = now };
         db.Messages.Add(message);
         await db.SaveChangesAsync(); // The id is generated here, and the member needs it.

@@ -59,7 +59,7 @@ public static class ChatEndpoints
                 // The store accepted the name, so it is valid.
                 string added = Rules.NormalizeUsername(request.Username)!;
                 notifier.Inbox(added, new InboxNotice("added", id, null));
-                await notifier.ChatMemberAddedAsync(id, added);
+                await notifier.ChatMembersChangedAsync(id);
             }
 
             return Results.NoContent();
@@ -72,7 +72,7 @@ public static class ChatEndpoints
 
             // The leaver's other tabs drop the chat from their list.
             notifier.Inbox(me, new InboxNotice("removed", id, null));
-            await notifier.ChatMemberLeftAsync(id, me);
+            await notifier.ChatMembersChangedAsync(id);
             return Results.NoContent();
         });
 

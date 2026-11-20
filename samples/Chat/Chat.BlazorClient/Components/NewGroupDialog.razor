@@ -1,7 +1,7 @@
 @inject ChatApi Api
 
 <div class="backdrop">
-    <form class="dialog" role="dialog" aria-modal="true" aria-label="New group" @onsubmit="CreateAsync">
+    <form class="dialog" role="dialog" aria-modal="true" aria-label="New group" @onsubmit="CreateAsync" @onsubmit:preventDefault>
         <h2>New group</h2>
         <label>
             Title

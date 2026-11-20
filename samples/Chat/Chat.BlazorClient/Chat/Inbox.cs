@@ -136,20 +136,23 @@ public sealed class Inbox(ChatConnection connection, ChatApi api, Session sessio
         try
         {
             await StopCoreAsync();
+
+            // Cleared before the lifecycle lock is released, so a start queued behind this stop never has its list
+            // wiped by it.
+            lock (_gate)
+            {
+                _chats = [];
+                _pending.Clear();
+                _listOwner = null;
+            }
+
+            Error = null;
         }
         finally
         {
             _lifecycle.Release();
         }
 
-        lock (_gate)
-        {
-            _chats = [];
-            _pending.Clear();
-            _listOwner = null;
-        }
-
-        Error = null;
         Changed?.Invoke();
     }
 

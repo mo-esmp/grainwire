@@ -4,6 +4,7 @@ using System.Text.Json;
 using ChatSample.Server.Api;
 using ChatSample.Server.Data;
 using GrainWire.Client;
+using Microsoft.Extensions.DependencyInjection;
 using JoinOptions = GrainWire.Client.JoinOptions;
 
 namespace GrainWire.Tests;
@@ -312,5 +313,38 @@ public sealed class ChatServerTests(ChatServerFixture server)
         Assert.Equal(chat.Id, (await removed).ChatId);
         Assert.Equal(bob, (await memberLeft).Username);
         await Assert.ThrowsAnyAsync<GrainWireClientException>(() => OpenChatAsync(bobClient, chat.Id));
+    }
+
+    [Fact]
+    public async Task A_room_that_missed_a_leave_catches_up_on_the_next_message()
+    {
+        string alice = ChatServerFixture.NewName("alice");
+        string bob = ChatServerFixture.NewName("bob");
+        string aliceToken = await server.SignUpAsync(alice);
+        string bobToken = await server.SignUpAsync(bob);
+        using HttpClient aliceHttp = server.Http(aliceToken);
+        await using GrainWireClient aliceClient = await ConnectAsync(aliceToken);
+        await using GrainWireClient bobClient = await ConnectAsync(bobToken);
+        ChatSummary chat = await CreateGroupAsync(aliceHttp, bob);
+
+        Room<ChatView> aliceRoom = await OpenChatAsync(aliceClient, chat.Id);
+        Room<ChatView> bobRoom = await OpenChatAsync(bobClient, chat.Id);
+        TaskCompletionSource<ClosedInfo> closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        bobRoom.OnClosed(info => closed.TrySetResult(info));
+        bool bobGotIt = false;
+        bobRoom.On<MessageDto>("message", _ => bobGotIt = true);
+        Task<MemberEvent> memberLeft = NextAsync<MemberEvent>(aliceRoom, "member-left");
+        Task<MessageDto> aliceGotIt = NextAsync<MessageDto>(aliceRoom, "message");
+
+        // Bob leaves in the database only, as if the API's call to the room had failed.
+        ChatStore store = server.Services.GetRequiredService<ChatStore>();
+        await store.LeaveAsync(bob, chat.Id);
+
+        await aliceRoom.RequestAsync<MessageDto>("send", new { Text = "after bob left" });
+
+        Assert.Equal(RoomClosedReason.Kicked, (await closed.Task.WaitAsync(Wait)).Reason);
+        Assert.Equal(bob, (await memberLeft).Username);
+        Assert.Equal("after bob left", (await aliceGotIt).Text);
+        Assert.False(bobGotIt);
     }
 }

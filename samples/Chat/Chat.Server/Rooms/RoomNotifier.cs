@@ -5,7 +5,7 @@ namespace ChatSample.Server.Rooms;
 /// <summary>
 /// Tells rooms about changes made elsewhere: inboxes about new messages and memberships, open chat rooms about
 /// members who came or went. A failed call is logged and never fails the caller, because the database change it
-/// reports is already saved and clients catch up on their next snapshot.
+/// reports is already saved and the rooms catch up from the database on their own.
 /// </summary>
 public sealed class RoomNotifier(IGrainFactory grains, ILogger<RoomNotifier> log)
 {
@@ -23,29 +23,28 @@ public sealed class RoomNotifier(IGrainFactory grains, ILogger<RoomNotifier> log
         }
     }
 
-    /// <summary>Tells the chat's room, if it is open, that the user was added.</summary>
-    public async Task ChatMemberAddedAsync(string chatId, string username)
+    /// <summary>
+    /// Tells the chat's room, if it is open, that its members changed. It is tried twice. If both fail, the room still
+    /// catches up: it reads the member list from the database again on the next message and the next join.
+    /// </summary>
+    public async Task ChatMembersChangedAsync(string chatId)
     {
-        try
+        for (int attempt = 1; ; attempt++)
         {
-            await Chat(chatId).MemberAdded(username);
-        }
-        catch (Exception e)
-        {
-            log.LogWarning(e, "Could not tell chat {Chat} that {User} was added.", chatId, username);
-        }
-    }
-
-    /// <summary>Tells the chat's room, if it is open, that the user left.</summary>
-    public async Task ChatMemberLeftAsync(string chatId, string username)
-    {
-        try
-        {
-            await Chat(chatId).MemberLeft(username);
-        }
-        catch (Exception e)
-        {
-            log.LogWarning(e, "Could not tell chat {Chat} that {User} left.", chatId, username);
+            try
+            {
+                await Chat(chatId).MembersChanged();
+                return;
+            }
+            catch (Exception e) when (attempt < 2)
+            {
+                log.LogInformation(e, "Telling chat {Chat} about a member change failed; trying again.", chatId);
+            }
+            catch (Exception e)
+            {
+                log.LogWarning(e, "Could not tell chat {Chat} about a member change.", chatId);
+                return;
+            }
         }
     }
 

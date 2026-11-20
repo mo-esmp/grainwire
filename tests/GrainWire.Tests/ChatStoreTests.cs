@@ -210,6 +210,22 @@ public sealed class ChatStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task A_read_marker_past_the_newest_message_does_not_hide_later_ones()
+    {
+        ChatStore store = NewStore();
+        string id = (await store.GetOrCreateDirectAsync("alice", "bob", T0)).Chat.Id;
+        await store.AddMessageAsync(id, "bob", "1", T0);
+
+        async Task<int> Unread() => Assert.Single(await store.ListChatsAsync("alice")).Unread;
+
+        await store.MarkReadAsync("alice", id, long.MaxValue);
+        Assert.Equal(0, await Unread());
+
+        await store.AddMessageAsync(id, "bob", "2", T0);
+        Assert.Equal(1, await Unread());
+    }
+
+    [Fact]
     public async Task History_pages_back_fifty_at_a_time()
     {
         ChatStore store = NewStore();

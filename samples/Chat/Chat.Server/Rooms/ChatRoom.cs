@@ -6,11 +6,11 @@ namespace ChatSample.Server.Rooms;
 /// <summary>How the API tells an open chat room that its members changed.</summary>
 public interface IChatRoom : IGrainWithStringKey
 {
-    /// <summary>The user was added to the chat.</summary>
-    Task MemberAdded(string username);
-
-    /// <summary>The user left the chat. If they have it open, it is closed for them.</summary>
-    Task MemberLeft(string username);
+    /// <summary>
+    /// Someone was added or left. The room reads the member list again from the database, tells who has the chat
+    /// open, and closes it for anyone who is no longer a member.
+    /// </summary>
+    Task MembersChanged();
 }
 
 /// <summary>
@@ -37,7 +37,23 @@ public sealed class ChatRoom(ChatStore store, RoomNotifier notifier) : RoomGrain
             Reject("You are no longer in this chat.", "not-member");
         }
 
-        Broadcast("message", sent.Message);
+        // The database has just said who the members are. If the room missed a change (the API's call to it failed),
+        // it catches up here.
+        IReadOnlySet<string> gone = ApplyMembers([.. sent.Recipients, player.Value]);
+        if (gone.Count == 0)
+        {
+            Broadcast("message", sent.Message);
+        }
+        else
+        {
+            // A kick takes effect after this command's events are sent, so a broadcast would still reach the
+            // members being removed. Send it to the others one by one instead.
+            foreach (RoomMember member in Members.Where(m => !gone.Contains(m.Player.Value)))
+            {
+                SendTo(member.Player, "message", sent.Message);
+            }
+        }
+
         foreach (string recipient in sent.Recipients)
         {
             notifier.Inbox(recipient, new InboxNotice("activity", RoomId, sent.Message));
@@ -50,7 +66,7 @@ public sealed class ChatRoom(ChatStore store, RoomNotifier notifier) : RoomGrain
     }
 
     /// <inheritdoc />
-    public Task MemberAdded(string username)
+    public Task MembersChanged()
     {
         if (!State.Loaded)
         {
@@ -58,39 +74,10 @@ public sealed class ChatRoom(ChatStore store, RoomNotifier notifier) : RoomGrain
             return Task.CompletedTask;
         }
 
-        return ExecuteAsync(() =>
+        return ExecuteAsync(async () =>
         {
-            if (!State.Members.Contains(username))
-            {
-                State.Members.Add(username);
-                State.Members.Sort(StringComparer.Ordinal);
-            }
-
-            Broadcast("member-added", new { username });
-            return Task.CompletedTask;
-        });
-    }
-
-    /// <inheritdoc />
-    public Task MemberLeft(string username)
-    {
-        if (!State.Loaded)
-        {
-            DeactivateOnIdle();
-            return Task.CompletedTask;
-        }
-
-        return ExecuteAsync(() =>
-        {
-            State.Members.Remove(username);
-            Broadcast("member-left", new { username });
-            PlayerId player = new(username);
-            if (FindMember(player) is not null)
-            {
-                Kick(player, "You left this chat.");
-            }
-
-            return Task.CompletedTask;
+            ChatInfo? chat = await store.GetChatInfoAsync(RoomId);
+            ApplyMembers(chat?.Members ?? []);
         });
     }
 
@@ -120,10 +107,46 @@ public sealed class ChatRoom(ChatStore store, RoomNotifier notifier) : RoomGrain
     protected override object GetSnapshot(PlayerId viewer) =>
         new ChatView(RoomId, State.Kind, State.Title, State.Members);
 
-    private async Task<JoinResult> MembersOnlyAsync(JoinContext context) =>
-        await store.IsMemberAsync(RoomId, context.Player.Value)
+    /// <summary>
+    /// Lets in only members. The member list is read from the database each time, so the room also catches up on
+    /// any change it was not told about.
+    /// </summary>
+    private async Task<JoinResult> MembersOnlyAsync(JoinContext context)
+    {
+        ChatInfo? chat = await store.GetChatInfoAsync(RoomId);
+        IReadOnlyList<string> members = chat?.Members ?? [];
+        ApplyMembers(members);
+        return members.Contains(context.Player.Value)
             ? JoinResult.Accept()
             : JoinResult.Reject("This chat does not exist.");
+    }
+
+    /// <summary>
+    /// Makes the room's member list match <paramref name="members"/>: tells the room who came and who went, and
+    /// closes the chat for anyone gone who has it open. Returns the names of those it closed it for.
+    /// </summary>
+    private HashSet<string> ApplyMembers(IReadOnlyList<string> members)
+    {
+        HashSet<string> closed = new(StringComparer.Ordinal);
+        foreach (string username in State.Members.Except(members, StringComparer.Ordinal).ToList())
+        {
+            Broadcast("member-left", new { username });
+            PlayerId player = new(username);
+            if (FindMember(player) is not null)
+            {
+                Kick(player, "You are no longer in this chat.");
+                closed.Add(username);
+            }
+        }
+
+        foreach (string username in members.Except(State.Members, StringComparer.Ordinal))
+        {
+            Broadcast("member-added", new { username });
+        }
+
+        State.Members = [.. members.Order(StringComparer.Ordinal)];
+        return closed;
+    }
 }
 
 /// <summary>The chat room's state: what it loaded from the database when it was created.</summary>

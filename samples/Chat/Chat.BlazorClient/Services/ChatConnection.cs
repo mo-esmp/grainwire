@@ -102,7 +102,9 @@ public sealed class ChatConnection : IAsyncDisposable
 
     private void OnSessionChanged()
     {
-        if (!_session.IsSignedIn && _client is not null)
+        // Scheduled even when there is no connection yet: one may be opening right now, and the close waits for it
+        // behind the gate, so it is never left running after sign-out.
+        if (!_session.IsSignedIn)
         {
             _ = CloseWhenSignedOutAsync();
         }
