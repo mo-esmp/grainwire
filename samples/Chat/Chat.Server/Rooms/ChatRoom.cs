@@ -1,4 +1,4 @@
-using ChatSample.Server.Data;
+﻿using ChatSample.Server.Data;
 using GrainWire;
 
 namespace ChatSample.Server.Rooms;
@@ -12,32 +12,6 @@ public interface IChatRoom : IGrainWithStringKey
     /// <summary>The user left the chat. If they have it open, it is closed for them.</summary>
     Task MemberLeft(string username);
 }
-
-/// <summary>The chat room's state: what it loaded from the database when it was created.</summary>
-[GenerateSerializer]
-public sealed class ChatRoomState
-{
-    /// <summary>
-    /// True once the room was created. A call on a room that is not running starts an empty one, which this tells
-    /// apart from a real room.
-    /// </summary>
-    [Id(0)] public bool Loaded { get; set; }
-
-    /// <summary>"direct" or "group".</summary>
-    [Id(1)] public string Kind { get; set; } = "";
-
-    /// <summary>The group's title, or null for a private chat.</summary>
-    [Id(2)] public string? Title { get; set; }
-
-    /// <summary>The usernames of the chat's members, in order.</summary>
-    [Id(3)] public List<string> Members { get; set; } = [];
-}
-
-/// <summary>The body of the <c>send</c> command.</summary>
-public sealed record SendRequest(string Text);
-
-/// <summary>What the chat room shows when someone opens it. Messages are loaded through the API.</summary>
-public sealed record ChatView(string Id, string Kind, string? Title, IReadOnlyList<string> Members);
 
 /// <summary>
 /// One per chat (the room id is the chat id), running while someone has the chat open. Messages are sent here,
@@ -143,10 +117,41 @@ public sealed class ChatRoom(ChatStore store, RoomNotifier notifier) : RoomGrain
     protected override Task<JoinResult> OnRejoin(JoinContext context) => MembersOnlyAsync(context);
 
     /// <summary>The chat's kind, title and members. Everyone in the room sees the same.</summary>
-    protected override object GetSnapshot(PlayerId viewer) => new ChatView(RoomId, State.Kind, State.Title, State.Members);
+    protected override object GetSnapshot(PlayerId viewer) =>
+        new ChatView(RoomId, State.Kind, State.Title, State.Members);
 
     private async Task<JoinResult> MembersOnlyAsync(JoinContext context) =>
         await store.IsMemberAsync(RoomId, context.Player.Value)
             ? JoinResult.Accept()
             : JoinResult.Reject("This chat does not exist.");
 }
+
+/// <summary>The chat room's state: what it loaded from the database when it was created.</summary>
+[GenerateSerializer]
+public sealed class ChatRoomState
+{
+    /// <summary>
+    /// True once the room was created. A call on a room that is not running starts an empty one, which this tells
+    /// apart from a real room.
+    /// </summary>
+    [Id(0)]
+    public bool Loaded { get; set; }
+
+    /// <summary>"direct" or "group".</summary>
+    [Id(1)]
+    public string Kind { get; set; } = "";
+
+    /// <summary>The group's title, or null for a private chat.</summary>
+    [Id(2)]
+    public string? Title { get; set; }
+
+    /// <summary>The usernames of the chat's members, in order.</summary>
+    [Id(3)]
+    public List<string> Members { get; set; } = [];
+}
+
+/// <summary>The body of the <c>send</c> command.</summary>
+public sealed record SendRequest(string Text);
+
+/// <summary>What the chat room shows when someone opens it. Messages are loaded through the API.</summary>
+public sealed record ChatView(string Id, string Kind, string? Title, IReadOnlyList<string> Members);

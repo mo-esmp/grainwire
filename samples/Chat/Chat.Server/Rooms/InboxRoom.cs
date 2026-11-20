@@ -1,38 +1,8 @@
-using ChatSample.Server.Data;
+﻿using ChatSample.Server.Data;
 using GrainWire;
 using Orleans.Concurrency;
 
 namespace ChatSample.Server.Rooms;
-
-/// <summary>
-/// Something a user should hear about in a chat they may not have open. <paramref name="Event"/> is
-/// <c>activity</c> (a new message), <c>added</c> or <c>removed</c>. <paramref name="Message"/> is set only for
-/// <c>activity</c>.
-/// </summary>
-[GenerateSerializer]
-public sealed record InboxNotice(
-    [property: Id(0)] string Event,
-    [property: Id(1)] string ChatId,
-    [property: Id(2)] MessageDto? Message);
-
-/// <summary>How the API and the chat rooms reach a user's inbox.</summary>
-public interface IInboxRoom : IGrainWithStringKey
-{
-    /// <summary>Sends the notice to the user's open connections. The caller does not wait for it.</summary>
-    [OneWay]
-    Task Notify(InboxNotice notice);
-}
-
-/// <summary>The inbox room's state: only whether the room was really created.</summary>
-[GenerateSerializer]
-public sealed class InboxState
-{
-    /// <summary>
-    /// True once the room was created. A call on a room that is not running starts an empty one, which this tells
-    /// apart from a real room.
-    /// </summary>
-    [Id(0)] public bool Loaded { get; set; }
-}
 
 /// <summary>
 /// One per user (the room id is the username). It holds no data: it tells the user's connections about chats
@@ -81,4 +51,35 @@ public sealed class InboxRoom : RoomGrain<InboxState>, IInboxRoom
 
     private JoinResult OwnerOnly(JoinContext context) =>
         context.Player.Value == RoomId ? JoinResult.Accept() : JoinResult.Reject("This is not your inbox.");
+}
+
+/// <summary>
+/// Something a user should hear about in a chat they may not have open. <paramref name="Event"/> is
+/// <c>activity</c> (a new message), <c>added</c> or <c>removed</c>. <paramref name="Message"/> is set only for
+/// <c>activity</c>.
+/// </summary>
+[GenerateSerializer]
+public sealed record InboxNotice(
+    [property: Id(0)] string Event,
+    [property: Id(1)] string ChatId,
+    [property: Id(2)] MessageDto? Message);
+
+/// <summary>How the API and the chat rooms reach a user's inbox.</summary>
+public interface IInboxRoom : IGrainWithStringKey
+{
+    /// <summary>Sends the notice to the user's open connections. The caller does not wait for it.</summary>
+    [OneWay]
+    Task Notify(InboxNotice notice);
+}
+
+/// <summary>The inbox room's state: only whether the room was really created.</summary>
+[GenerateSerializer]
+public sealed class InboxState
+{
+    /// <summary>
+    /// True once the room was created. A call on a room that is not running starts an empty one, which this tells
+    /// apart from a real room.
+    /// </summary>
+    [Id(0)]
+    public bool Loaded { get; set; }
 }
