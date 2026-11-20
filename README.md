@@ -73,6 +73,7 @@ Requires .NET 10 and Orleans 10. The broker is [MQTTnet](https://github.com/dotn
 - [Wire protocol](docs/protocol.md): for building other clients
 - [Benchmarks](docs/benchmarks.md)
 - [Chess sample](samples/Chess/README.md): a complete small game with a browser client
+- [Chat sample](samples/Chat/README.md): private and group chat with a database, a Web API and a Blazor client
 
 ## Limits of v1
 

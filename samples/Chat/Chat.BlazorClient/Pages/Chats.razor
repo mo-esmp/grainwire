@@ -1,0 +1,93 @@
+@page "/"
+@page "/c/{Id}"
+@implements IDisposable
+@inject Session Session
+@inject Inbox Inbox
+@inject ChatApi Api
+@inject NavigationManager Navigation
+
+<PageTitle>GrainWire Chat</PageTitle>
+
+@if (Session.IsSignedIn)
+{
+    <main class="chats">
+        <aside class="sidebar">
+            <UserSearch Placeholder="Search users to chat with…" OnPicked="OpenDirectAsync" />
+            <button id="new-group" type="button" @onclick="() => _newGroup = true">+ New group</button>
+            @if (_error is { Length: > 0 } problem)
+            {
+                <p class="notice" role="alert">@problem</p>
+            }
+            @if (Inbox.Error is { Length: > 0 } inboxError)
+            {
+                <p class="notice" id="inbox-error" role="alert">
+                    @inboxError
+                    <button id="retry" type="button" disabled="@Inbox.IsStarting" @onclick="Inbox.StartAsync">Retry</button>
+                </p>
+            }
+            <ChatList Chats="Inbox.Chats" SelectedId="@Id" />
+        </aside>
+        <div class="main">
+            @* Always there: one pane serialises every switch between chats, including to "no chat" and back. *@
+            <ChatPane ChatId="@Id" />
+        </div>
+    </main>
+
+    @if (_newGroup)
+    {
+        <NewGroupDialog OnCreated="GroupCreated" OnCancel="() => _newGroup = false" />
+    }
+}
+
+@code {
+    private string? _error;
+    private bool _newGroup;
+
+    /// <summary>The id of the chat on screen, or null when none is.</summary>
+    [Parameter]
+    public string? Id { get; set; }
+
+    protected override void OnInitialized()
+    {
+        if (!Session.IsSignedIn)
+        {
+            Navigation.NavigateTo("login", replace: true);
+            return;
+        }
+
+        Inbox.Changed += OnInboxChanged;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && Session.IsSignedIn)
+        {
+            await Inbox.StartAsync();
+        }
+    }
+
+    private async Task OpenDirectAsync(string user)
+    {
+        _error = null;
+        try
+        {
+            ChatSummary chat = await Api.StartDirectAsync(user);
+            Navigation.NavigateTo($"c/{chat.Id}");
+        }
+        catch (ApiException error)
+        {
+            _error = error.Message;
+        }
+    }
+
+    private void GroupCreated(ChatSummary group)
+    {
+        _newGroup = false;
+        Navigation.NavigateTo($"c/{group.Id}");
+    }
+
+    // The inbox raises its event on whatever thread the news arrived on.
+    private void OnInboxChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Inbox.Changed -= OnInboxChanged;
+}

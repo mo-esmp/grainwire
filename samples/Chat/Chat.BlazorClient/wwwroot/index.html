@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GrainWire Chat</title>
+    <base href="/" />
+    <link rel="preload" id="webassembly" />
+    <link rel="stylesheet" href="css/app.css" />
+    <script type="importmap"></script>
+  </head>
+  <body>
+    <div id="app">
+      <p class="loading">Loading…</p>
+    </div>
+    <div id="blazor-error-ui">
+      Something went wrong.
+      <a href="." class="reload">Reload</a>
+      <span class="dismiss">🗙</span>
+    </div>
+    <script>
+      // Shows the newest message: the chat pane calls this after it draws.
+      window.chatScroll = (element) => { if (element) { element.scrollTop = element.scrollHeight; } };
+    </script>
+    <script src="_framework/blazor.webassembly#[.{fingerprint}].js"></script>
+  </body>
+</html>

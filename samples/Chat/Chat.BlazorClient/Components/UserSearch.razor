@@ -1,0 +1,92 @@
+@implements IDisposable
+@inject ChatApi Api
+
+<div class="user-search">
+    <input type="search" placeholder="@Placeholder" aria-label="@Placeholder" autocomplete="off" maxlength="24"
+           value="@_text" @oninput="OnInputAsync" />
+    @if (_error is { Length: > 0 } error)
+    {
+        <p class="notice" role="alert">@error</p>
+    }
+    @if (_results.Count > 0)
+    {
+        <ul class="results">
+            @foreach (string user in _results)
+            {
+                <li><button type="button" @onclick="() => PickAsync(user)">@user</button></li>
+            }
+        </ul>
+    }
+</div>
+
+@code {
+    private const int DebounceMilliseconds = 300;
+
+    private CancellationTokenSource _typing = new();
+    private string _text = "";
+    private string? _error;
+    private IReadOnlyList<string> _results = [];
+
+    /// <summary>The hint shown in the empty box.</summary>
+    [Parameter]
+    public string Placeholder { get; set; } = "Search users…";
+
+    /// <summary>Users that are not offered, for example the members a group already has.</summary>
+    [Parameter]
+    public IReadOnlyCollection<string> Exclude { get; set; } = [];
+
+    /// <summary>Called with the name of the user the person picked.</summary>
+    [Parameter, EditorRequired]
+    public EventCallback<string> OnPicked { get; set; }
+
+    private async Task OnInputAsync(ChangeEventArgs args)
+    {
+        _text = args.Value?.ToString() ?? "";
+        string prefix = _text.Trim();
+
+        // Each keystroke replaces the previous wait, so the search runs once the person pauses.
+        _typing.Cancel();
+        CancellationTokenSource typing = _typing = new CancellationTokenSource();
+        if (prefix.Length == 0)
+        {
+            _results = [];
+            _error = null;
+            return;
+        }
+
+        try
+        {
+            await Task.Delay(DebounceMilliseconds, typing.Token);
+            IReadOnlyList<string> found = await Api.SearchAsync(prefix);
+            if (!typing.IsCancellationRequested)
+            {
+                _results = [.. found.Where(user => !Exclude.Contains(user))];
+                _error = null;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer keystroke took over.
+        }
+        catch (ApiException error)
+        {
+            // A search that a newer keystroke replaced has nothing to say.
+            if (!typing.IsCancellationRequested)
+            {
+                _results = [];
+                _error = error.Message;
+            }
+        }
+    }
+
+    private async Task PickAsync(string user)
+    {
+        _typing.Cancel();
+        _text = "";
+        _results = [];
+        _error = null;
+        await OnPicked.InvokeAsync(user);
+    }
+
+    public void Dispose() => _typing.Cancel();
+}
