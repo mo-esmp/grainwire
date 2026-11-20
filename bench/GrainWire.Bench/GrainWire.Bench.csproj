@@ -4,6 +4,8 @@
     <RootNamespace>GrainWire.Bench</RootNamespace>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <ServerGarbageCollection>true</ServerGarbageCollection>
+    <!-- "dotnet run" keeps the directory it was started from, so the relative paths of the out and gcdump options are relative to it. -->
+    <RunWorkingDirectory>$(MSBuildStartupDirectory)</RunWorkingDirectory>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Orleans.Server" />

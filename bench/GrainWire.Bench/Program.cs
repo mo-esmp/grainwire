@@ -1,7 +1,11 @@
 ﻿using System.Diagnostics;
+using System.Globalization;
 using System.Net;
+using System.Reflection;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using GrainWire;
@@ -13,18 +17,32 @@ using GrainWire.Server;
 //   dotnet run -c Release --project bench/GrainWire.Bench -- run [--rooms 5000] [--members 1000] [--seconds 30] [--out docs/benchmarks-latest.md]
 //
 // "run" starts three processes of this same program (one Orleans silo and two standalone gateways), drives them
-// with real MQTT clients over WebSockets, and prints the results. The other two modes are those processes.
+// with real MQTT clients over WebSockets, and prints the results. "silo" and "gateway" are those processes.
+//
+//   dotnet run -c Release --project bench/GrainWire.Bench -- idle [--connections 3000] [--factor 4] [--rooms-per-connection 1] [--out <file>] [--gcdump <directory>]
+//
+// "idle" measures what an idle connection costs the gateways, as the slope between two connection counts, each in
+// fresh processes. With --gcdump it also dumps the first gateway's heap in state 2 (dotnet-gcdump must be installed) and
+// attributes the bytes to their owners. See docs/specs/2026-11-19-grainwire-on-mqttwire-design.md, section 6.
+//
+//   dotnet run -c Release --project bench/GrainWire.Bench -- floor-run [--connections 3000] [--factor 4] [--tls] [--out <file>]
+//
+// "floor-run" measures the same idle connections against a bare WebSocket endpoint, the "floor" mode.
 
 string mode = args.Length > 0 ? args[0] : "run";
 int Arg(string name, int fallback) => Array.IndexOf(args, name) is int i and >= 0 && i + 1 < args.Length ? int.Parse(args[i + 1]) : fallback;
 string? Text(string name) => Array.IndexOf(args, name) is int i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+bool Flag(string name) => Array.IndexOf(args, name) >= 0;
 
 return mode switch
 {
     "silo" => await RunSilo(Arg("--http", 0), Arg("--silo-port", 0), Arg("--gateway-port", 0)),
-    "gateway" => await RunGateway(Arg("--http", 0), Arg("--gateway-port", 0)),
+    "gateway" => await RunGateway(Arg("--http", 0), Arg("--gateway-port", 0), Flag("--claims")),
     "run" => await RunBenchmark(Arg("--rooms", 5000), Arg("--members", 1000), Arg("--seconds", 30), Text("--out")),
-    _ => Fail($"Unknown mode '{mode}'. Use: run | silo | gateway."),
+    "idle" => await RunIdle(Arg("--connections", 3000), Arg("--factor", 4), Arg("--rooms-per-connection", 1), Text("--out"), Text("--gcdump")),
+    "floor" => await RunFloor(Arg("--http", 0), Flag("--tls")),
+    "floor-run" => await RunFloorBenchmark(Arg("--connections", 3000), Arg("--factor", 4), Flag("--tls"), Text("--out")),
+    _ => Fail($"Unknown mode '{mode}'. Use: run | idle | floor-run | silo | gateway | floor."),
 };
 
 static int Fail(string message)
@@ -70,7 +88,7 @@ static async Task<int> RunSilo(int http, int siloPort, int gatewayPort)
     return 0;
 }
 
-static async Task<int> RunGateway(int http, int orleansGatewayPort)
+static async Task<int> RunGateway(int http, int orleansGatewayPort, bool withClaims)
 {
     WebApplicationBuilder builder = NewBuilder(http);
     builder.UseOrleansClient(client =>
@@ -78,6 +96,12 @@ static async Task<int> RunGateway(int http, int orleansGatewayPort)
         client.UseLocalhostClustering(orleansGatewayPort, "gw-bench", "gw-bench");
         client.AddGrainWireClient();
     });
+    if (withClaims)
+    {
+        // Before AddGrainWireGateway, which only adds the development authenticator if none is registered.
+        builder.Services.AddSingleton<IConnectionAuthenticator, BenchAuthenticator>();
+    }
+
     builder.Services.AddGrainWireGateway(options => options.RoomCreationsPerMinute = int.MaxValue);
     WebApplication app = builder.Build();
     app.MapGrainWire();
@@ -322,7 +346,343 @@ static async Task BigRoom(int members, int seconds, string[] urls, int[] stats, 
     await Parallel.ForEachAsync(clients, new ParallelOptions { MaxDegreeOfParallelism = 64 }, async (client, _) => await client.DisposeAsync());
 }
 
+// ---------------------------------------------------------------- idle connections (step 0)
+
+static async Task<int> RunIdle(int connections, int factor, int roomsPerConnection, string? outFile, string? gcdump)
+{
+    CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+    StringBuilder report = new();
+    void Line(string text = "")
+    {
+        Console.WriteLine(text);
+        report.AppendLine(text);
+    }
+
+    Line(Machine());
+    IdleStates small, large;
+    List<string> dumpFailures = [];
+    try
+    {
+        small = await IdleRun(connections, roomsPerConnection, gcdump, dumpFailures, Line);
+        large = await IdleRun(connections * factor, roomsPerConnection, gcdump, dumpFailures, Line);
+    }
+    catch (Exception e)
+    {
+        Console.Error.WriteLine($"The idle run stopped: {e.Message}");
+        return 1;
+    }
+
+    Fit Heap(Func<IdleStates, HeapSample> state) => Slope.Between(small.Connections, state(small).HeapBytes, large.Connections, state(large).HeapBytes);
+    Fit WorkingSet(Func<IdleStates, HeapSample> state) => Slope.Between(small.Connections, state(small).WorkingSetBytes, large.Connections, state(large).WorkingSetBytes);
+    void Row(string name, Func<IdleStates, HeapSample> state) =>
+        Line($"| {name} | {Heap(state).PerConnection:N0} | {Mb(Heap(state).Fixed)} | {WorkingSet(state).PerConnection:N0} |");
+
+    int RoomsOf(IdleStates states) => states.Connections / 2 * roomsPerConnection;
+    Fit silo = Slope.Between(RoomsOf(small), small.SiloJoined.HeapBytes, RoomsOf(large), large.SiloJoined.HeapBytes);
+
+    Line();
+    Line($"Idle connections on today's gateway (MQTTnet {MqttNetVersion()}): {small.Connections:N0} and {large.Connections:N0} connections, {roomsPerConnection} room(s) of two per pair, three claims each.");
+    Line("Per connection is the slope between the two counts. \"Fixed\" is the line's value at no connections.");
+    Line();
+    Line("| State | Live managed bytes per connection | Fixed (MB) | Working set per connection |");
+    Line("|---|---|---|---|");
+    Row("1. Connected and subscribed", s => s.Connected);
+    Row("2. Joined", s => s.Joined);
+    Row("3. Active, then idle", s => s.ActiveThenIdle);
+    Row("2 again, after churn", s => s.JoinedAgain);
+    Line();
+    Line($"- Kept after activity, per connection (state 3 − state 2): {Heap(s => s.ActiveThenIdle).PerConnection - Heap(s => s.Joined).PerConnection:N0} bytes");
+    Line($"- After churn (state 4), live managed bytes above the baseline: {Mb(small.AfterChurn.HeapBytes - small.Baseline.HeapBytes)} MB and {Mb(large.AfterChurn.HeapBytes - large.Baseline.HeapBytes)} MB");
+    Line($"- Silo, per room in state 2: {silo.PerConnection:N0} bytes");
+    Line($"- State 3 deliveries that never arrived (QoS 0; at most 0.1% in all and half of any client's are tolerated): {small.MissingDeliveries:N0} of {small.ExpectedDeliveries:N0} and {large.MissingDeliveries:N0} of {large.ExpectedDeliveries:N0}; seen by the clients as gaps in the sequence numbers, which a real client repairs with a sync: {small.GappedDeliveries:N0} and {large.GappedDeliveries:N0}");
+
+    if (gcdump is not null)
+    {
+        string smallText = Path.Combine(gcdump, $"gateway-{small.Connections}.txt");
+        string largeText = Path.Combine(gcdump, $"gateway-{large.Connections}.txt");
+        Line();
+        if (dumpFailures.Count > 0 || !File.Exists(smallText) || !File.Exists(largeText))
+        {
+            Line($"- No attribution: {(dumpFailures.Count > 0 ? string.Join("; ", dumpFailures.Distinct()) : "a heap dump report is missing")}.");
+        }
+        else
+        {
+            // The first gateway carries half of the connections.
+            IReadOnlyDictionary<string, long> smallBuckets = HeapAttribution.Parse(await File.ReadAllTextAsync(smallText));
+            IReadOnlyDictionary<string, long> largeBuckets = HeapAttribution.Parse(await File.ReadAllTextAsync(largeText));
+            Line("Who owns the bytes in state 2, per connection on one gateway (slope between the two heap dumps):");
+            Line();
+            Line("| Owner | Bytes per connection |");
+            Line("|---|---|");
+            double PerConnection(long smallBytes, long largeBytes) => Slope.Between(small.Connections / 2, smallBytes, large.Connections / 2, largeBytes).PerConnection;
+            double attributed = 0;
+            foreach (string bucket in HeapAttribution.Buckets)
+            {
+                double perConnection = PerConnection(smallBuckets[bucket], largeBuckets[bucket]);
+                attributed += perConnection;
+                Line($"| {bucket} | {perConnection:N0} |");
+            }
+
+            string smallReport = await File.ReadAllTextAsync(smallText);
+            string largeReport = await File.ReadAllTextAsync(largeText);
+            if (HeapAttribution.TotalOf(smallReport) is long smallTotal && HeapAttribution.TotalOf(largeReport) is long largeTotal)
+            {
+                double total = PerConnection(smallTotal, largeTotal);
+                Line($"| Difference from the dumps' own total (strings and arrays are approximate) | {total - attributed:N0} |");
+                Line($"| **The dumps' own total** | **{total:N0}** |");
+            }
+
+            Line();
+            Line("A type is counted under its own namespace, so the strings, arrays and tasks that belong to a library's objects are under \"Other\". Compare with the floor to see how much of \"Other\" comes with any WebSocket.");
+            Line("For strings and arrays the dump's report gives the size of one object, not the average, so their rows are approximate; the difference row shows by how much the rows miss the dumps' own total.");
+        }
+    }
+
+    if (outFile is not null)
+    {
+        await File.WriteAllTextAsync(outFile, report.ToString());
+    }
+
+    return 0;
+}
+
+/// <summary>One run of the idle workload in fresh processes: one silo and two gateways that give every connection three claims.</summary>
+static async Task<IdleStates> IdleRun(int connections, int roomsPerConnection, string? gcdump, List<string> dumpFailures, Action<string> log)
+{
+    log($"Run with {connections:N0} connections:");
+    await PortBudget.WaitForAsync(connections, log);   // before the servers take their ports
+    int siloHttp = FreePort();
+    int orleansGateway = FreePort();
+    int[] gatewayHttp = [FreePort(), FreePort()];
+    List<(string Name, Process Process)> processes = [("silo", Spawn($"silo --http {siloHttp} --silo-port {FreePort()} --gateway-port {orleansGateway}"))];
+    try
+    {
+        await WaitForHealth(siloHttp);
+        processes.Add(("first gateway", Spawn($"gateway --http {gatewayHttp[0]} --gateway-port {orleansGateway} --claims")));
+        processes.Add(("second gateway", Spawn($"gateway --http {gatewayHttp[1]} --gateway-port {orleansGateway} --claims")));
+        await Task.WhenAll(WaitForHealth(gatewayHttp[0]), WaitForHealth(gatewayHttp[1]));
+        Func<Task>? atJoined = null;
+        if (gcdump is not null)
+        {
+            int firstGateway = processes[1].Process.Id;
+            atJoined = async () =>
+            {
+                if (await DumpHeap(firstGateway, gcdump, connections, log) is string failure)
+                {
+                    dumpFailures.Add(failure);
+                }
+            };
+        }
+
+        IdleSetup setup = new(connections, roomsPerConnection, [.. gatewayHttp.Select(p => $"ws://127.0.0.1:{p}/mqtt")], gatewayHttp, siloHttp, atJoined);
+        return await IdleWorkload.RunAsync(setup, log);
+    }
+    catch (Exception e) when (processes.FirstOrDefault(p => p.Process.HasExited) is { Process: not null } gone)
+    {
+        throw new InvalidOperationException($"the {gone.Name} (process {gone.Process.Id}) exited during the run. {e.Message}", e);
+    }
+    finally
+    {
+        Kill(processes.Select(p => p.Process));
+    }
+}
+
+/// <summary>
+/// Takes a heap dump of a gateway with dotnet-gcdump and saves its report beside it. Returns what failed, or null.
+/// A failure never stops the idle run: the report then says there is no attribution.
+/// </summary>
+static async Task<string?> DumpHeap(int pid, string directory, int connections, Action<string> log)
+{
+    Directory.CreateDirectory(directory);
+    string dump = Path.Combine(directory, $"gateway-{connections}.gcdump");
+    string text = Path.ChangeExtension(dump, ".txt");
+    File.Delete(dump);
+    File.Delete(text);
+
+    Stopwatch watch = Stopwatch.StartNew();
+    (string? failure, _) = await RunTool(["collect", "-p", pid.ToString(CultureInfo.InvariantCulture), "-o", dump]);
+    if (failure is not null)
+    {
+        return failure;
+    }
+
+    (failure, string report) = await RunTool(["report", dump]);
+    if (failure is not null)
+    {
+        return failure;
+    }
+
+    await File.WriteAllTextAsync(text, report);
+    log($"- Heap dump of the first gateway in {watch.Elapsed.TotalSeconds:F1} s: {dump}");
+    return null;
+
+    static async Task<(string? Failure, string Output)> RunTool(string[] arguments)
+    {
+        ProcessStartInfo start = new("dotnet-gcdump") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (string argument in arguments)
+        {
+            start.ArgumentList.Add(argument);
+        }
+
+        string what = $"dotnet-gcdump {arguments[0]}";
+        Process process;
+        try
+        {
+            process = Process.Start(start)!;
+        }
+        catch (Exception e)
+        {
+            return ($"{what} could not be started ({e.Message})", "");
+        }
+
+        using (process)
+        {
+            Task<string> output = process.StandardOutput.ReadToEndAsync();
+            Task<string> error = process.StandardError.ReadToEndAsync();
+            using CancellationTokenSource limit = new(TimeSpan.FromMinutes(3));
+            try
+            {
+                await process.WaitForExitAsync(limit.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                process.Kill(entireProcessTree: true);
+                return ($"{what} took more than three minutes", "");
+            }
+
+            return process.ExitCode == 0
+                ? (null, await output)
+                : ($"{what} exited with code {process.ExitCode} ({(await error).Trim()})", "");
+        }
+    }
+}
+
+// ---------------------------------------------------------------- the floor (step 0)
+
+static async Task<int> RunFloor(int http, bool tls)
+{
+    WebApplicationBuilder builder = NewBuilder(http);
+    if (tls)
+    {
+        X509Certificate2 certificate = SelfSignedCertificate();
+        builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, http, listen => listen.UseHttps(certificate)));
+    }
+
+    WebApplication app = builder.Build();
+    FloorServer.Map(app);
+    MapStats(app);
+    await app.RunAsync();
+    return 0;
+}
+
+/// <summary>RSA 2,048, CN=localhost. Exported to PKCS#12 and loaded again, because SslStream cannot use an ephemeral key on Windows.</summary>
+static X509Certificate2 SelfSignedCertificate()
+{
+    using RSA key = RSA.Create(2048);
+    CertificateRequest request = new("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+    SubjectAlternativeNameBuilder names = new();
+    names.AddDnsName("localhost");
+    names.AddIpAddress(IPAddress.Loopback);
+    request.CertificateExtensions.Add(names.Build());
+    using X509Certificate2 ephemeral = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+    return X509CertificateLoader.LoadPkcs12(ephemeral.Export(X509ContentType.Pkcs12), null);
+}
+
+static async Task<int> RunFloorBenchmark(int connections, int factor, bool tls, string? outFile)
+{
+    CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+    StringBuilder report = new();
+    void Line(string text = "")
+    {
+        Console.WriteLine(text);
+        report.AppendLine(text);
+    }
+
+    Line(Machine());
+    FloorStates small, large;
+    try
+    {
+        small = await FloorRun(connections, tls, Line);
+        large = await FloorRun(connections * factor, tls, Line);
+    }
+    catch (Exception e)
+    {
+        Console.Error.WriteLine($"The floor run stopped: {e.Message}");
+        return 1;
+    }
+
+    Fit Heap(Func<FloorStates, HeapSample> state) => Slope.Between(small.Connections, state(small).HeapBytes, large.Connections, state(large).HeapBytes);
+    Fit WorkingSet(Func<FloorStates, HeapSample> state) => Slope.Between(small.Connections, state(small).WorkingSetBytes, large.Connections, state(large).WorkingSetBytes);
+    void Row(string name, Func<FloorStates, HeapSample> state) =>
+        Line($"| {name} | {Heap(state).PerConnection:N0} | {Mb(Heap(state).Fixed)} | {WorkingSet(state).PerConnection:N0} |");
+
+    Line();
+    Line($"The floor: a bare ASP.NET Core WebSocket endpoint (sub-protocol mqtt, keep-alive off, zero-byte read){(tls ? ", with TLS in Kestrel" : "")}. {small.Connections:N0} and {large.Connections:N0} idle connections.");
+    Line();
+    Line("| State | Live managed bytes per connection | Fixed (MB) | Working set per connection |");
+    Line("|---|---|---|---|");
+    Row("Connected", s => s.Connected);
+    Row("Connected again, after churn", s => s.ConnectedAgain);
+    Line();
+    Line($"- After churn, live managed bytes above the baseline: {Mb(small.AfterChurn.HeapBytes - small.Baseline.HeapBytes)} MB and {Mb(large.AfterChurn.HeapBytes - large.Baseline.HeapBytes)} MB");
+
+    if (outFile is not null)
+    {
+        await File.WriteAllTextAsync(outFile, report.ToString());
+    }
+
+    return 0;
+}
+
+/// <summary>One run of the floor workload against a fresh floor process.</summary>
+static async Task<FloorStates> FloorRun(int connections, bool tls, Action<string> log)
+{
+    log($"Run with {connections:N0} connections:");
+    await PortBudget.WaitForAsync(connections, log);   // before the servers take their ports
+    int port = FreePort();
+    Process server = Spawn($"floor --http {port}{(tls ? " --tls" : "")}");
+    try
+    {
+        await WaitForHealth(port, tls ? "https" : "http");
+        return await FloorWorkload.RunAsync(connections, $"{(tls ? "wss" : "ws")}://127.0.0.1:{port}/mqtt", port, log);
+    }
+    catch (Exception e) when (server.HasExited)
+    {
+        throw new InvalidOperationException($"the floor server (process {server.Id}) exited during the run. {e.Message}", e);
+    }
+    finally
+    {
+        Kill([server]);
+    }
+}
+
 // ---------------------------------------------------------------- helpers
+
+static string Machine() =>
+    $"Machine: {RuntimeInformation.OSDescription}, {Environment.ProcessorCount} logical cores, {GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1L << 30)} GB RAM, .NET {Environment.Version}";
+
+static string MqttNetVersion() =>
+    typeof(MQTTnet.Server.MqttServer).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0] ?? "unknown";
+
+static string Mb(double bytes) => (bytes / 1024.0 / 1024.0).ToString("F1", CultureInfo.InvariantCulture);
+
+static void Kill(IEnumerable<Process> processes)
+{
+    foreach (Process process in processes)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch
+        {
+            // Already gone.
+        }
+    }
+}
 
 static string Kb(long bytes, int count) => (bytes / 1024.0 / Math.Max(1, count)).ToString("F1");
 
@@ -351,15 +711,16 @@ static Process Spawn(string arguments)
     return Process.Start(start)!;
 }
 
-static async Task WaitForHealth(int port)
+static async Task WaitForHealth(int port, string scheme = "http")
 {
-    using HttpClient http = new();
+    // Any certificate is accepted: the floor's https certificate is made at start-up.
+    using HttpClient http = new(new HttpClientHandler { ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator });
     DateTime deadline = DateTime.UtcNow.AddSeconds(90);
     while (true)
     {
         try
         {
-            if ((await http.GetAsync($"http://127.0.0.1:{port}/health")).IsSuccessStatusCode)
+            if ((await http.GetAsync($"{scheme}://127.0.0.1:{port}/health")).IsSuccessStatusCode)
             {
                 return;
             }

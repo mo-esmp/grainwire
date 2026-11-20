@@ -18,6 +18,8 @@ public sealed class BenchClient : IAsyncDisposable
     private readonly string _player;
     private TaskCompletionSource _snapshot = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _commandCounter;
+    private long _said;
+    private readonly SequenceGaps _gaps = new();
     private static long s_received;
 
     /// <summary>Messages received by all clients so far.</summary>
@@ -56,8 +58,8 @@ public sealed class BenchClient : IAsyncDisposable
             long now = Stopwatch.GetTimestamp();
             Interlocked.Increment(ref s_received);
             Utf8JsonReader reader = new(e.ApplicationMessage.Payload);
-            string? type = null, command = null;
-            long sentAt = 0;
+            string? type = null, command = null, room = null;
+            long sentAt = 0, seq = 0;
             bool ok = false;
             while (reader.Read())
             {
@@ -70,6 +72,8 @@ public sealed class BenchClient : IAsyncDisposable
                 else if (reader.ValueTextEquals("cmd"u8)) { reader.Read(); command = reader.GetString(); }
                 else if (reader.ValueTextEquals("status"u8)) { reader.Read(); ok = reader.ValueTextEquals("ok"u8); }
                 else if (reader.ValueTextEquals("ts"u8)) { reader.Read(); sentAt = reader.GetInt64(); }
+                else if (reader.CurrentDepth == 1 && reader.ValueTextEquals("room"u8)) { reader.Read(); room = reader.GetString(); }
+                else if (reader.CurrentDepth == 1 && reader.ValueTextEquals("seq"u8)) { reader.Read(); seq = reader.GetInt64(); }
                 else if (reader.ValueTextEquals("pad"u8) || reader.ValueTextEquals("blob"u8)) { reader.Read(); }
             }
 
@@ -81,9 +85,18 @@ public sealed class BenchClient : IAsyncDisposable
             {
                 _snapshot.TrySetResult();
             }
-            else if (type == "said" && sentAt != 0)
+            else if (type == "said")
             {
-                events.Record(Stopwatch.GetElapsedTime(sentAt, now));
+                Interlocked.Increment(ref _said);
+                if (room is not null && seq > 0)
+                {
+                    _gaps.Observe(room, seq);
+                }
+
+                if (sentAt != 0)
+                {
+                    events.Record(Stopwatch.GetElapsedTime(sentAt, now));
+                }
             }
 
             return Task.CompletedTask;
@@ -91,6 +104,22 @@ public sealed class BenchClient : IAsyncDisposable
     }
 
     public Func<Task>? Disconnected { get; set; }
+
+    /// <summary>"said" events this client has received.</summary>
+    public long SaidReceived => Interlocked.Read(ref _said);
+
+    /// <summary>"said" events this client never saw although later ones of the same room arrived.</summary>
+    public long SaidGaps => _gaps.Total;
+
+    /// <summary>Waits until every client has received at least <paramref name="expectedEach"/> "said" events, or the time is up.</summary>
+    public static async Task WaitForSaidAsync(IReadOnlyList<BenchClient?> clients, long expectedEach, TimeSpan limit)
+    {
+        Stopwatch watch = Stopwatch.StartNew();
+        while (watch.Elapsed < limit && clients.Any(client => client is null || client.SaidReceived < expectedEach))
+        {
+            await Task.Delay(100);
+        }
+    }
 
     public async Task ConnectAsync(string url)
     {
