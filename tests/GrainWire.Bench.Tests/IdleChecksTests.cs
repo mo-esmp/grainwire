@@ -24,6 +24,28 @@ public class IdleChecksTests
         Assert.Equal("12 commands failed in the activity phase; the connections were not active.", error.Message);
     }
 
+    [Fact]
+    public void Every_client_with_all_its_deliveries_passes()
+    {
+        IdleChecks.RequireDeliveries([40, 40, 41, 40], expectedEach: 40);
+    }
+
+    [Fact]
+    public void Deliveries_that_never_arrived_stop_the_run()
+    {
+        // Two clients, 40 commands, every "said" event dropped by the gateway: the commands all succeeded, nothing arrived.
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(() => IdleChecks.RequireDeliveries([0, 0], expectedEach: 40));
+        Assert.Equal("Only 0 of 80 deliveries arrived in the activity phase; 2 of 2 clients are short. The fan-out was not exercised.", error.Message);
+    }
+
+    [Fact]
+    public void A_client_that_is_short_stops_the_run_even_when_the_total_adds_up()
+    {
+        // One client got the deliveries of another twice over; the aggregate (160) hides the receiver that got nothing.
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(() => IdleChecks.RequireDeliveries([40, 80, 0, 40], expectedEach: 40));
+        Assert.Equal("Only 120 of 160 deliveries arrived in the activity phase; 1 of 4 clients are short. The fan-out was not exercised.", error.Message);
+    }
+
     [Theory]
     [InlineData(100_000_000, 100_900_000, true)]    // 0.9% apart
     [InlineData(100_000_000, 99_100_000, true)]

@@ -18,6 +18,7 @@ public sealed class BenchClient : IAsyncDisposable
     private readonly string _player;
     private TaskCompletionSource _snapshot = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _commandCounter;
+    private long _said;
     private static long s_received;
 
     /// <summary>Messages received by all clients so far.</summary>
@@ -81,9 +82,13 @@ public sealed class BenchClient : IAsyncDisposable
             {
                 _snapshot.TrySetResult();
             }
-            else if (type == "said" && sentAt != 0)
+            else if (type == "said")
             {
-                events.Record(Stopwatch.GetElapsedTime(sentAt, now));
+                Interlocked.Increment(ref _said);
+                if (sentAt != 0)
+                {
+                    events.Record(Stopwatch.GetElapsedTime(sentAt, now));
+                }
             }
 
             return Task.CompletedTask;
@@ -91,6 +96,19 @@ public sealed class BenchClient : IAsyncDisposable
     }
 
     public Func<Task>? Disconnected { get; set; }
+
+    /// <summary>"said" events this client has received.</summary>
+    public long SaidReceived => Interlocked.Read(ref _said);
+
+    /// <summary>Waits until every client has received at least <paramref name="expectedEach"/> "said" events, or the time is up.</summary>
+    public static async Task WaitForSaidAsync(IReadOnlyList<BenchClient?> clients, long expectedEach, TimeSpan limit)
+    {
+        Stopwatch watch = Stopwatch.StartNew();
+        while (watch.Elapsed < limit && clients.Any(client => client is null || client.SaidReceived < expectedEach))
+        {
+            await Task.Delay(100);
+        }
+    }
 
     public async Task ConnectAsync(string url)
     {

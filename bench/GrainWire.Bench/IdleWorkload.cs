@@ -31,6 +31,10 @@ public static class IdleWorkload
     private const int Parallelism = 64;
     private const int CommandsPerClient = 20;   // inside the gateway's default burst of 40
 
+    // Each "say" goes to both members of its room, so every client receives its own commands and its partner's.
+    private const int SaidPerClient = 2 * CommandsPerClient;
+    private static readonly TimeSpan s_deliveryLimit = TimeSpan.FromSeconds(60);
+
     // The gateway drops its empty per-room tables when it renews its leases, every 10 s.
     private static readonly TimeSpan s_churnWait = TimeSpan.FromSeconds(25);
 
@@ -90,8 +94,10 @@ public static class IdleWorkload
                 Interlocked.Add(ref failed, says.Count(say => !say.IsCompletedSuccessfully || !say.Result));
             });
             IdleChecks.RequireNoFailures(failed);
+            await BenchClient.WaitForSaidAsync(clients, SaidPerClient, s_deliveryLimit);
+            IdleChecks.RequireDeliveries([.. clients.Select(client => client?.SaidReceived ?? 0)], SaidPerClient);
             await BenchClient.WaitForQuietAsync();
-            log($"- {setup.Connections * CommandsPerClient:N0} commands in {watch.Elapsed.TotalSeconds:F1} s");
+            log($"- {setup.Connections * CommandsPerClient:N0} commands and {(long)setup.Connections * SaidPerClient:N0} deliveries in {watch.Elapsed.TotalSeconds:F1} s");
             HeapSample stateActive = await SampleGateways();
 
             // State 4: everyone gone.
