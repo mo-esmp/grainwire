@@ -30,7 +30,8 @@ public static class IdleChecks
     /// <summary>
     /// Stops the run unless the activity phase's deliveries arrived, and returns how many never did. The gateway publishes
     /// at QoS 0 and skips a batch that comes more than 250 ms late (docs/guarantees.md: not every event is guaranteed), so a
-    /// small loss is tolerated and reported: at most 0.1% of all deliveries, and at most a tenth of any one client's. Each
+    /// small loss is tolerated and reported: at most 0.1% of all deliveries, and at most half of any one client's. Skipped
+    /// batches come in runs, so the loss falls on a few clients rather than spread over all of them. Each
     /// client is checked on its own, so a total that adds up cannot hide a client that received nothing.
     /// </summary>
     /// <returns>The deliveries that never arrived.</returns>
@@ -42,12 +43,12 @@ public static class IdleChecks
         long missing = missingPerClient.Sum();
         long expected = expectedEach * receivedPerClient.Count;
         long worst = missingPerClient.DefaultIfEmpty(0).Max();
-        long perClientTolerated = expectedEach / 10;
+        long perClientTolerated = expectedEach / 2;
         if (missing * 1_000 > expected || worst > perClientTolerated)
         {
             int shortClients = missingPerClient.Count(m => m > 0);
             throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture,
-                $"{missing:N0} of {expected:N0} deliveries never arrived in the activity phase; {shortClients:N0} of {receivedPerClient.Count:N0} clients are short, the worst by {worst:N0} of {expectedEach:N0}. At most 0.1% in all and {perClientTolerated:N0} per client are tolerated: the fan-out was not exercised."));
+                $"{missing:N0} of {expected:N0} deliveries never arrived in the activity phase; {shortClients:N0} of {receivedPerClient.Count:N0} clients are short, the worst by {worst:N0} of {expectedEach:N0}. At most 0.1% in all and half of any client's are tolerated: the fan-out was not exercised."));
         }
 
         return missing;

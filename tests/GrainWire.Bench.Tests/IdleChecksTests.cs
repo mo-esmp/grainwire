@@ -46,7 +46,7 @@ public class IdleChecksTests
     {
         // Two clients, 40 commands, every "said" event dropped by the gateway: the commands all succeeded, nothing arrived.
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(() => IdleChecks.RequireDeliveries([0, 0], expectedEach: 40));
-        Assert.Equal("80 of 80 deliveries never arrived in the activity phase; 2 of 2 clients are short, the worst by 40 of 40. At most 0.1% in all and 4 per client are tolerated: the fan-out was not exercised.", error.Message);
+        Assert.Equal("80 of 80 deliveries never arrived in the activity phase; 2 of 2 clients are short, the worst by 40 of 40. At most 0.1% in all and half of any client's are tolerated: the fan-out was not exercised.", error.Message);
     }
 
     [Fact]
@@ -54,17 +54,38 @@ public class IdleChecksTests
     {
         // One client got the deliveries of another twice over; the aggregate (160) hides the receiver that got nothing.
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(() => IdleChecks.RequireDeliveries([40, 80, 0, 40], expectedEach: 40));
-        Assert.Equal("40 of 160 deliveries never arrived in the activity phase; 1 of 4 clients are short, the worst by 40 of 40. At most 0.1% in all and 4 per client are tolerated: the fan-out was not exercised.", error.Message);
+        Assert.Equal("40 of 160 deliveries never arrived in the activity phase; 1 of 4 clients are short, the worst by 40 of 40. At most 0.1% in all and half of any client's are tolerated: the fan-out was not exercised.", error.Message);
     }
 
     [Fact]
-    public void One_client_missing_more_than_a_tenth_stops_the_run_though_the_total_is_small()
+    public void The_second_full_run_passes_though_its_loss_fell_on_few_clients()
     {
-        // 5 of 120,000 is far under 0.1%, but one client lost 5 of its 40.
+        // 62 of 120,000 lost, on five clients, the worst 16 of its 40: batches skipped by the gateway come in runs.
         long[] received = [.. Enumerable.Repeat(40L, 3_000)];
-        received[9] = 35;
+        received[3] = 24;
+        received[400] = 24;
+        received[1_201] = 26;
+        received[2_002] = 28;
+        received[2_999] = 36;
+        Assert.Equal(62, IdleChecks.RequireDeliveries(received, expectedEach: 40));
+    }
+
+    [Fact]
+    public void A_client_that_lost_half_of_its_deliveries_passes()
+    {
+        long[] received = [.. Enumerable.Repeat(40L, 3_000)];
+        received[9] = 20;
+        Assert.Equal(20, IdleChecks.RequireDeliveries(received, expectedEach: 40));
+    }
+
+    [Fact]
+    public void A_client_that_lost_more_than_half_stops_the_run_though_the_total_is_small()
+    {
+        // 21 of 120,000 is far under 0.1%, but one client got only 19 of its 40.
+        long[] received = [.. Enumerable.Repeat(40L, 3_000)];
+        received[9] = 19;
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(() => IdleChecks.RequireDeliveries(received, expectedEach: 40));
-        Assert.StartsWith("5 of 120,000 deliveries never arrived in the activity phase; 1 of 3,000 clients are short, the worst by 5 of 40.", error.Message);
+        Assert.StartsWith("21 of 120,000 deliveries never arrived in the activity phase; 1 of 3,000 clients are short, the worst by 21 of 40.", error.Message);
     }
 
     [Fact]

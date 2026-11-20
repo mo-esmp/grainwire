@@ -13,7 +13,8 @@ public sealed record IdleStates(
     HeapSample JoinedAgain,     // state 2 again, after everyone came back
     HeapSample SiloJoined,      // the silo in state 2, for information
     long ExpectedDeliveries,    // state 3's "said" events, over all clients
-    long MissingDeliveries);    // of those, the ones that never arrived
+    long MissingDeliveries,     // of those, the ones that never arrived
+    long GappedDeliveries);     // of the missing, the ones the client saw as gaps in the sequence numbers
 
 /// <param name="AtJoined">Called in state 2, after its sample; Task 4 takes its heap dump here.</param>
 public sealed record IdleSetup(
@@ -100,7 +101,8 @@ public static class IdleWorkload
             long missing = IdleChecks.RequireDeliveries([.. clients.Select(client => client?.SaidReceived ?? 0)], SaidPerClient);
             await BenchClient.WaitForQuietAsync();
             long expected = (long)setup.Connections * SaidPerClient;
-            log($"- {setup.Connections * CommandsPerClient:N0} commands and {expected - missing:N0} of {expected:N0} deliveries in {watch.Elapsed.TotalSeconds:F1} s");
+            long gapped = clients.Sum(client => client?.SaidGaps ?? 0);
+            log($"- {setup.Connections * CommandsPerClient:N0} commands and {expected - missing:N0} of {expected:N0} deliveries in {watch.Elapsed.TotalSeconds:F1} s; {gapped:N0} of the {missing:N0} missing seen as gaps");
             HeapSample stateActive = await SampleGateways();
 
             // State 4: everyone gone.
@@ -116,7 +118,7 @@ public static class IdleWorkload
             await BenchClient.WaitForQuietAsync();
             HeapSample stateJoinedAgain = await SampleGateways();
 
-            return new IdleStates(setup.Connections, baseline, stateConnected, stateJoined, stateActive, stateChurned, stateJoinedAgain, silo, expected, missing);
+            return new IdleStates(setup.Connections, baseline, stateConnected, stateJoined, stateActive, stateChurned, stateJoinedAgain, silo, expected, missing, gapped);
         }
         finally
         {
