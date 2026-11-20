@@ -20,12 +20,15 @@ their type names tell (section 5).
 
 ## 3. The targets
 
-| Target | As proposed | In bytes | Today |
+| Target | Set to | In bytes | Today |
 |---|---|---|---|
-| MqttWire alone, idle | floor + 1 KB | about 12,900 | (no MqttWire yet) |
-| A joined connection in GrainWire, states 2 and 3 | floor + 2 KB | about 14,000 | 34,039 (state 2), 35,429 to 35,722 (state 3) |
+| MqttWire alone, idle | floor + 1 KB, as proposed | about 12,900 | (no MqttWire yet) |
+| A joined connection in GrainWire, states 2 and 3 | floor + 3 KB, the owner's decision (proposed: floor + 2 KB) | about 15,000 | 34,039 (state 2), 35,429 to 35,722 (state 3) |
 
-(1 KB is 1,024 bytes.) Meeting the GrainWire target would take about 60% off today's cost.
+(1 KB is 1,024 bytes.) Meeting the GrainWire target would take about 56% off today's cost in state 2.
+
+**Decided on 2026-11-20:** after reading this report, the owner set the GrainWire target to **floor + 3 KB** instead of
+the proposed floor + 2 KB. The MqttWire target stays at floor + 1 KB, as proposed.
 
 **What the attribution says about them** (section 5 has the details):
 
@@ -41,11 +44,10 @@ their type names tell (section 5).
   object, its rate limiter, the per-connection inbound channel and its async state, its dictionaries, one room's
   share of the per-room tables), GrainWire costs at least **2,700 bytes** per joined connection today. It is a lower
   bound: the dictionary of three claims and the player's strings do not mention GrainWire in their type names. Because
-  the GrainWire target of floor + 2 KB includes MqttWire's 1 KB, GrainWire itself has about 1 KB left. **GrainWire has
-  to cut its per-connection state by well over half to meet the target as written.** Likely places: the
-  per-connection bounded channel and its pending async operations, and the two `ConcurrentDictionary`s (the
-  connection's rooms, the room's connections) whose bucket arrays alone take 320 bytes each. If that proves too
-  tight, floor + 3 KB is the honest alternative; it is the owner's call.
+  the GrainWire target of floor + 3 KB includes MqttWire's 1 KB, GrainWire itself has about 2 KB left. **GrainWire has
+  to cut its per-connection state by at least 650 bytes, about a quarter, to meet it.** (Against the proposed
+  floor + 2 KB, which left GrainWire about 1 KB, the cut would have had to be well over half.) Likely places: the per-connection bounded channel and its pending async operations, and the two `ConcurrentDictionary`s
+  (the connection's rooms, the room's connections) whose bucket arrays alone take 320 bytes each.
 - **Each further room adds about 1,400 bytes per connection** (five rooms per connection: 39,717 bytes in state 2,
   against 34,039 bytes with one). The target is stated for one room of two per pair, so this is not part of it, but
   it is GrainWire's own cost and grows with use.

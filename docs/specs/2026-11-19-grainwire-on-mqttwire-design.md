@@ -329,7 +329,9 @@ The packages are a preview and not published, so the removal needs no deprecatio
 - **Report to the owner** before anything else is built: today's figures and their split, the
   floor, and the targets. The proposed targets are **floor + 1 KB for MqttWire alone** and
   **floor + 2 KB for a joined connection in GrainWire**, in states 2 and 3 alike; both are
-  provisional until the attribution shows whether they are realistic. **If the floor alone is
+  provisional until the attribution shows whether they are realistic. **After step 0 the owner
+  set the GrainWire target to floor + 3 KB** (2026-11-20; see
+  [the step 0 report](../step-0-idle-memory.md)); the MqttWire target stays floor + 1 KB. **If the floor alone is
   more than about 70% of today's figure, the approach cannot deliver much, and the owner
   decides** whether to continue, or to look at own WebSocket framing in MqttWire.
 
@@ -414,8 +416,8 @@ TypeScript client stays on MQTT.js; MQTTnet stays in the tests and the benchmark
    exists only while there are requests (5.3). This goes beyond replacing MQTTnet, but it is
    part of what an idle connection costs today.
 6. When the gateway stops, accepted requests get 5 s in total to finish (5.5).
-7. The targets "floor + 1 KB" for MqttWire and "floor + 2 KB" for GrainWire, and the 70% rule
-   (section 6).
+7. The targets "floor + 1 KB" for MqttWire and "floor + 3 KB" for GrainWire (proposed as
+   floor + 2 KB; set to floor + 3 KB by the owner after step 0), and the 70% rule (section 6).
 8. "Not worse" is judged on p50 and p95 only (section 8).
 9. The steps of section 7 alternate between the two repositories; step 3 leaves the builder a
    choice about `ClientProtocolTests`.
