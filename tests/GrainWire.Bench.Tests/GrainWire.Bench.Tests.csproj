@@ -9,6 +9,6 @@
     <PackageReference Include="xunit.runner.visualstudio" />
     <ProjectReference Include="../../bench/GrainWire.Bench/GrainWire.Bench.csproj" />
     <Using Include="Xunit" />
-    <None Include="gcdump-report-sample.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="gcdump-report-sample.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

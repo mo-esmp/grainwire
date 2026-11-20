@@ -1075,5 +1075,7 @@ The MQTT rules and the .NET behaviour this design relies on were checked against
 and the .NET 10 source, as far as they could be reached. Section 13 of
 [the v5 design](2026-11-19-minimal-mqtt-design.md) lists what was confirmed, what could not be
 reached (chapter 4 and chapter 6 of the standard), and the secondary sources used for the
-repeated-identifier rule and for "no re-sending inside a connection". Nothing has been run or
-measured yet.
+repeated-identifier rule and for "no re-sending inside a connection". MqttWire itself has not been
+built, so none of its own behaviour or memory has been run or measured yet. What has been measured
+is the starting point: today's idle cost per connection and the bare-WebSocket floor, in
+[the step 0 report](../step-0-idle-memory.md).

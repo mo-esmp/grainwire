@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 
 namespace GrainWire.Bench;
@@ -21,24 +20,41 @@ public static class HeapSampler
         Timeout = TimeSpan.FromSeconds(60),
     };
 
-    /// <summary>Samples the process at <paramref name="baseUrl"/> (for example http://127.0.0.1:5001) until two samples two seconds apart are within 1%, for at most 30 s.</summary>
-    /// <exception cref="InvalidOperationException">The process does not answer.</exception>
-    public static async Task<HeapSample> StableAsync(string baseUrl, Action<string> log)
+    /// <summary>
+    /// Samples the process at <paramref name="baseUrl"/> (for example http://127.0.0.1:5001) until two samples two seconds
+    /// apart are within 1%, for at most <paramref name="limit"/> (30 s by default). The limit covers the requests too: if it
+    /// runs out, the last sample read is returned with a note.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The process does not answer, or gives no sample within the limit.</exception>
+    public static async Task<HeapSample> StableAsync(string baseUrl, Action<string> log, TimeSpan? limit = null)
     {
-        Stopwatch watch = Stopwatch.StartNew();
-        HeapSample previous = await ReadAsync(baseUrl);
+        using CancellationTokenSource deadline = new(limit ?? s_limit);
+        HeapSample previous;
+        try
+        {
+            previous = await ReadAsync(baseUrl, deadline.Token);
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        {
+            throw new InvalidOperationException($"The server at {baseUrl} did not answer within {(limit ?? s_limit).TotalSeconds:N0} s.");
+        }
+
         while (true)
         {
-            await Task.Delay(s_interval);
-            HeapSample current = await ReadAsync(baseUrl);
-            if (IdleChecks.IsStable(previous.HeapBytes, current.HeapBytes))
+            HeapSample current;
+            try
             {
-                return current;
+                await Task.Delay(s_interval, deadline.Token);
+                current = await ReadAsync(baseUrl, deadline.Token);
             }
-
-            if (watch.Elapsed >= s_limit)
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
             {
                 log($"- Note: the heap of the process at {baseUrl} was still moving when it was sampled.");
+                return previous;
+            }
+
+            if (IdleChecks.IsStable(previous.HeapBytes, current.HeapBytes))
+            {
                 return current;
             }
 
@@ -46,14 +62,14 @@ public static class HeapSampler
         }
     }
 
-    private static async Task<HeapSample> ReadAsync(string baseUrl)
+    private static async Task<HeapSample> ReadAsync(string baseUrl, CancellationToken cancellationToken)
     {
         string json;
         try
         {
-            json = await s_http.GetStringAsync($"{baseUrl}/stats");
+            json = await s_http.GetStringAsync($"{baseUrl}/stats", cancellationToken);
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        catch (Exception e) when ((e is HttpRequestException or TaskCanceledException) && !cancellationToken.IsCancellationRequested)
         {
             throw new InvalidOperationException($"The server at {baseUrl} is gone.", e);
         }
