@@ -6,7 +6,7 @@ The plan was [docs/plans/2026-11-19-step-0-idle-memory-plan.md](plans/2026-11-19
 
 ## 1. The result in three lines
 
-- **Today**, an idle connection that has joined one room of two costs the gateways **about 34,000 bytes** of live managed memory (34,039 and 34,078 bytes in two runs).
+- **Today**, an idle connection that has joined one room of two costs the gateways **about 34,000 bytes** of live managed memory (34,039, 34,078 and 34,106 bytes in three runs).
 - **The floor**, a bare ASP.NET Core WebSocket endpoint with the same idle connections, costs **about 11,900 bytes** (11,917, 11,921 and 11,915 bytes in three runs).
 - **The floor is 35% of today's figure.**
 
@@ -23,7 +23,7 @@ their type names tell (section 5).
 | Target | Set to | In bytes | Today |
 |---|---|---|---|
 | MqttWire alone, idle | floor + 1 KB, as proposed | about 12,900 | (no MqttWire yet) |
-| A joined connection in GrainWire, states 2 and 3 | floor + 3 KB, the owner's decision (proposed: floor + 2 KB) | about 15,000 | 34,039 (state 2), 35,429 to 35,722 (state 3) |
+| A joined connection in GrainWire, states 2 and 3 | floor + 3 KB, the owner's decision (proposed: floor + 2 KB) | about 15,000 | 34,039 to 34,106 (state 2), 35,380 to 35,722 (state 3) |
 
 (1 KB is 1,024 bytes.) Meeting the GrainWire target would take about 56% off today's cost in state 2.
 
@@ -83,6 +83,20 @@ slope between 3,000 and 12,000 connections. "Fixed" is the line's value at no co
 - After churn, above the baseline: 4.2 MB and 14.2 MB
 - Silo, per room in state 2: 9,618 bytes
 
+**One room of two per pair, third run** (after review, with the deliveries of the activity phase checked):
+
+| State | Live managed bytes per connection | Fixed (MB) | Working set per connection |
+|---|---|---|---|
+| 1. Connected and subscribed | 31,910 | 9.8 | 33,571 |
+| 2. Joined | 34,106 | 10.9 | 32,413 |
+| 3. Active, then idle | 35,380 | 12.2 | 45,242 |
+| 2 again, after churn | 34,477 | 11.5 | 33,021 |
+
+- Kept after activity, per connection: 1,274 bytes
+- After churn, above the baseline: 4.6 MB and 17.0 MB
+- Silo, per room in state 2: 9,479 bytes
+- Deliveries in the activity phase: all 120,000 and all 480,000 arrived (none missing, no gaps)
+
 **Five rooms per connection:**
 
 | State | Live managed bytes per connection | Fixed (MB) | Working set per connection |
@@ -98,14 +112,14 @@ slope between 3,000 and 12,000 connections. "Fixed" is the line's value at no co
 
 **Two things to know about today's gateway:**
 
-- **After activity, live managed bytes are 1.3 to 1.7 KB per connection higher** than before it (state 3 against
-  state 2; 1,350 bytes in the run without heap dumps, 1,683 in the run with them, where the dump ran inside the
+- **After activity, live managed bytes are 1.2 to 1.7 KB per connection higher** than before it (state 3 against
+  state 2; 1,274 and 1,350 bytes in the runs without heap dumps, 1,683 in the run with them, where the dump ran inside the
   gateway between the two samples). What holds them is not shown. The design also asks for "what the buffer pool
   keeps after activity" as a separate figure; this benchmark does not measure it separately, only the whole heap.
   In the five-room run the activity used only the first of each connection's rooms.
 - **After churn, memory does not fully come back.** 25 seconds after everyone has gone, the gateways hold 14 to
   18 MB more at 12,000 connections and 4 to 5 MB more at 3,000: about 1.2 to 1.6 KB per departed connection, and
-  about 3.5 KB with five rooms each. When everyone comes back, state 2 is 282 and 492 bytes per connection above the
+  about 3.5 KB with five rooms each. When everyone comes back, state 2 is 282, 371 and 492 bytes per connection above the
   first time with one room, and 1,204 bytes with five. One churn cycle cannot show whether it would pile up over many.
   What holds it is not shown: per-connection or per-room state kept for longer than 25 seconds, or buffers kept by a
   pool after the activity, are both possible; the residue per departed connection is close to what activity left
@@ -215,14 +229,24 @@ figure after churn.
   managed bytes after a full collection; each sample was taken only when two samples two seconds apart were within 1%.
   No sample had to be taken while the heap was still moving.
 - Commands, each in `bench/GrainWire.Bench`:
-  - `idle --gcdump artifacts/step-0 --out artifacts/step-0/idle.md` and again without dumps (`idle-2.md`)
+  - `idle --gcdump artifacts/step-0 --out artifacts/step-0/idle.md` and again without dumps (`idle-2.md`), and a third
+    time after review, with the delivery check (`idle-3.md`)
   - `idle --rooms-per-connection 5 --out artifacts/step-0/idle-5-rooms.md`
   - `floor-run --out artifacts/step-0/floor.md` and again (`floor-2.md`); `floor-run --tls --out artifacts/step-0/floor-tls.md`
   - the floor's heap dumps: `dotnet-gcdump collect` on the floor process during a third `floor-run`, about a second
     after all connections of each count were open
   - the exact sizes and holders in section 5: a one-off reader of the four `.gcdump` files
-- Agreement: the two gateway runs differ by 0.1% in state 2 and by 1% or less in every state's live managed bytes;
-  the three floor runs by 0.05%. No third gateway run was needed (the rule was 10%).
+- Agreement: the three gateway runs differ by 0.2% in state 2 and by 1% or less in every state's live managed bytes;
+  the three floor runs by 0.05%. The rule was 10%; the third gateway run was made for the delivery check, not for it.
+- **Deliveries in the activity phase.** Every "say" goes to both players of its room, so each client should receive
+  40 "said" events. Only the third run checks that they arrive: it waits up to 60 seconds for them, and stops unless
+  at most 0.1% of all deliveries and at most half of any client's are missing. The gateway publishes at QoS 0 and skips
+  a batch that comes more than 250 ms late, and [the guarantees](guarantees.md) do not promise every event, so a small
+  loss is allowed and reported, with how many of the missing the clients saw as gaps in the sequence numbers. Two
+  attempts before the third run stopped on earlier, stricter versions of the check: one lost 2 of 120,000 deliveries
+  at 3,000 connections (two clients one short each), the other 62 of 120,000, on five clients, the worst 16 of its 40.
+  The machine was slower in the second (3,000 connections took 3.4 s instead of 0.7 s). The first two runs' state 3
+  figures were taken without the check.
 - **Outbound ports.** Windows gives 16,384 outbound ports, and a closed connection keeps its port for about two
   minutes. The first attempt at these counts stopped with "Only 8,307 of 12,000 connections" when everyone came back
   after churn (that attempt's output was overwritten by the second). The benchmark now waits, before each mass
